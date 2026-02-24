@@ -1,0 +1,9 @@
+
+{
+  "name": "CampusWay - College Bus Tracker",
+  "description": "A real-time GPS tracking and attendance system for college buses. Features driver attendance with facial capture, real-time location broadcasting, and a student-facing live map with AI-powered ETA.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
