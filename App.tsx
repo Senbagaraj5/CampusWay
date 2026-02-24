@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UserRole, Bus, Location, AttendanceRecord } from './types';
-import { mockDatabase } from './services/mockDatabase';
+import { firebaseDatabase } from './services/firebaseDatabase';
 import { googleMapsService } from './services/googleMapsService';
 import { getSmartETA, getRouteAssistant, getTrafficAnalysis } from './services/geminiService';
 import MapComponent from './components/MapComponent';
@@ -21,60 +21,49 @@ const App: React.FC = () => {
   const [eta, setEta] = useState<number | null>(null);
   const [aiMessage, setAiMessage] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
-  
+
   // Driver login state
   const [showDriverLogin, setShowDriverLogin] = useState(false);
   const [driverId, setDriverId] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  
+
   // Alternative route state
   const [alternativeRoute, setAlternativeRoute] = useState<{ id: number, timeSaved: number } | null>(null);
 
   useEffect(() => {
-    setBuses(mockDatabase.getBuses());
-    
-    mockDatabase.onLocationUpdate(({ busId, location }) => {
-      setBuses(prev => prev.map(b => b.id === busId ? { ...b, lastLocation: location, status: 'ACTIVE' } : b));
-      if (selectedBus?.id === busId) {
-        setSelectedBus(prev => prev ? { ...prev, lastLocation: location, status: 'ACTIVE' } : null);
-      }
-    });
-  }, [selectedBus?.id]);
+    // Initial fetch
+    firebaseDatabase.getBuses().then(setBuses);
 
-  const [refreshCount, setRefreshCount] = useState<number>(0);
-  
-  // Auto-refresh every 3 seconds - updates map with fresh data
-  useEffect(() => {
-    const refreshInterval = setInterval(() => {
-      // Refresh buses list
-      const updatedBuses = mockDatabase.getBuses();
+    // Real-time listener — replaces polling
+    const unsubscribe = firebaseDatabase.onBusesUpdate((updatedBuses) => {
       setBuses(updatedBuses);
-      setRefreshCount(prev => prev + 1);
-      
-      // If a bus is selected, update it with latest data
-      if (selectedBus) {
-        const updatedBus = updatedBuses.find(b => b.id === selectedBus.id);
-        if (updatedBus) {
-          setSelectedBus(updatedBus);
-          
-          // For students: recalculate ETA with fresh data
-          if (role === 'STUDENT' && updatedBus.status === 'ACTIVE' && updatedBus.lastLocation && studentLocation) {
-            const distance = googleMapsService.calculateDistance(studentLocation, updatedBus.lastLocation);
-            const eta = googleMapsService.estimateETA(distance);
-            setEta(eta);
-          }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Keep selectedBus in sync with buses state (updated via Firebase listener)
+  useEffect(() => {
+    if (selectedBus) {
+      const updatedBus = buses.find(b => b.id === selectedBus.id);
+      if (updatedBus) {
+        setSelectedBus(updatedBus);
+
+        // For students: recalculate ETA with fresh data
+        if (role === 'STUDENT' && updatedBus.status === 'ACTIVE' && updatedBus.lastLocation && studentLocation) {
+          const distance = googleMapsService.calculateDistance(studentLocation, updatedBus.lastLocation);
+          const eta = googleMapsService.estimateETA(distance);
+          setEta(eta);
         }
       }
-    }, 3000); // Refresh every 3 seconds
-
-    return () => clearInterval(refreshInterval);
-  }, [selectedBus, role, studentLocation]);
+    }
+  }, [buses, selectedBus?.id, role, studentLocation]);
 
   useEffect(() => {
     if (role === 'STUDENT') {
       console.log('🎓 Student mode - Starting real-time location tracking');
-      
+
       // Get initial location immediately
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -89,12 +78,12 @@ const App: React.FC = () => {
         },
         (err) => console.error('❌ Initial location failed:', err)
       );
-      
+
       // Then start continuous watching
       const watchId = googleMapsService.watchUserLocation(
         (location) => {
           console.log('🔄 Student location updated:', location);
-          
+
           // Smooth location with weighted average
           const buf = samplesRef.current.student;
           buf.push(location);
@@ -107,7 +96,7 @@ const App: React.FC = () => {
           console.error("❌ Location watch error:", error);
         }
       );
-      
+
       return () => {
         console.log('🛑 Stopping location watch for student');
         navigator.geolocation.clearWatch(watchId);
@@ -132,7 +121,7 @@ const App: React.FC = () => {
       }
       if (role === 'DRIVER' && selectedBus) {
         setCurrentLocation(corrected);
-        mockDatabase.updateBusLocation(selectedBus.id, corrected);
+        firebaseDatabase.updateBusLocation(selectedBus.id, corrected);
       }
     };
 
@@ -147,7 +136,7 @@ const App: React.FC = () => {
 
     if (isTracking && role === 'DRIVER' && selectedBus) {
       console.log('🚌 Driver mode - Starting GPS broadcast for bus', selectedBus.busNumber);
-      
+
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           const loc: Location = {
@@ -157,13 +146,13 @@ const App: React.FC = () => {
             speed: pos.coords.speed || undefined,
             accuracy: pos.coords.accuracy ?? null,
           };
-          
+
           // Smoothing filter
           const buf = samplesRef.current.driver;
           buf.push(loc);
           if (buf.length > 6) buf.shift();
           const averaged = averageLocations(buf);
-          
+
           console.log('📍 Driver GPS:', {
             bus: selectedBus.busNumber,
             lat: averaged.lat.toFixed(6),
@@ -171,9 +160,9 @@ const App: React.FC = () => {
             accuracy: loc.accuracy,
             speed: loc.speed,
           });
-          
+
           setCurrentLocation(averaged);
-          mockDatabase.updateBusLocation(selectedBus.id, averaged);
+          firebaseDatabase.updateBusLocation(selectedBus.id, averaged);
         },
         (err) => {
           console.error('🚌 Driver location error:', err);
@@ -193,7 +182,7 @@ const App: React.FC = () => {
         }
       }, 30000);
     }
-    
+
     return () => {
       if (watchId) navigator.geolocation.clearWatch(watchId);
       if (trafficInterval) clearInterval(trafficInterval);
@@ -205,12 +194,12 @@ const App: React.FC = () => {
       console.error('❌ Check-in failed: No bus selected');
       return;
     }
-    
+
     console.log('✅ Check-in successful!');
     console.log('📸 Photo captured:', photoUrl.substring(0, 50) + '...');
     console.log('📍 Location:', loc);
     console.log('🚌 Bus:', selectedBus.busNumber);
-    
+
     const record: AttendanceRecord = {
       id: Math.random().toString(36).substr(2, 9),
       driverId: 'driver-123',
@@ -219,17 +208,17 @@ const App: React.FC = () => {
       location: loc,
       photoUrl
     };
-    
-    mockDatabase.saveAttendance(record);
+
+    firebaseDatabase.saveAttendance(record);
     console.log('📝 Attendance record saved');
-    
+
     setIsAttendanceOpen(false);
     console.log('🚀 Starting location tracking...');
-    
+
     setIsTracking(true);
     setCurrentLocation(loc);
-    mockDatabase.updateBusLocation(selectedBus.id, loc);
-    
+    firebaseDatabase.updateBusLocation(selectedBus.id, loc);
+
     console.log('✨ Driver is now LIVE and broadcasting location');
 
     // Send check-in to server (MSSQL API) - use network IP so it works from any device
@@ -259,9 +248,9 @@ const App: React.FC = () => {
       console.error('❌ No bus selected');
       return;
     }
-    
+
     console.log('🚀 Starting broadcast directly for bus:', selectedBus.busNumber);
-    
+
     // Get current location
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -271,9 +260,9 @@ const App: React.FC = () => {
           timestamp: pos.timestamp || Date.now(),
           accuracy: pos.coords.accuracy || 50,
         };
-        
+
         console.log('📍 Driver location:', loc);
-        
+
         // Save quick attendance record (without photo)
         const record: AttendanceRecord = {
           id: Math.random().toString(36).substr(2, 9),
@@ -283,15 +272,15 @@ const App: React.FC = () => {
           location: loc,
           photoUrl: '' // No photo
         };
-        
-        mockDatabase.saveAttendance(record);
+
+        firebaseDatabase.saveAttendance(record);
         console.log('📝 Attendance record saved (no photo)');
-        
+
         // Start tracking
         setIsTracking(true);
         setCurrentLocation(loc);
-        mockDatabase.updateBusLocation(selectedBus.id, loc);
-        
+        firebaseDatabase.updateBusLocation(selectedBus.id, loc);
+
         console.log('✨ Driver is now LIVE - Broadcasting location');
 
         // Send check-in to server
@@ -335,14 +324,14 @@ const App: React.FC = () => {
       try {
         // Calculate distance between student and bus
         const distance = googleMapsService.calculateDistance(studentLocation || { lat: 0, lng: 0, timestamp: 0 }, bus.lastLocation);
-        
+
         // Get smart ETA from AI
         const newEta = await getSmartETA(bus.lastLocation, bus.route);
         setEta(newEta);
-        
+
         // Get AI routing assistant message
         const msg = await getRouteAssistant(bus.busNumber, bus.status);
-        
+
         // If we have student location, add distance info
         const distanceText = studentLocation ? ` (${googleMapsService.formatDistance(distance)} away)` : '';
         setAiMessage(msg + distanceText);
@@ -363,13 +352,14 @@ const App: React.FC = () => {
     setAiMessage("Route updated! Navigating through the faster alternative.");
   };
 
-  const handleDriverLogin = () => {
+  const handleDriverLogin = async () => {
     if (!driverId.trim() || !password.trim()) {
       setLoginError('Please enter both Driver ID and Password');
       return;
     }
 
-    if (mockDatabase.validateDriverLogin(driverId, password)) {
+    const isValid = await firebaseDatabase.validateDriverLogin(driverId, password);
+    if (isValid) {
       setLoginError('');
       setRole('DRIVER');
       setShowDriverLogin(false);
@@ -445,7 +435,7 @@ const App: React.FC = () => {
                 <p className="mt-2 text-slate-500 font-medium">Real-time college transit ecosystem</p>
                 <p className="mt-1 text-xs font-semibold text-indigo-600">Mount Zion College of Engineering and Technology</p>
               </div>
-              
+
               <div className="grid grid-cols-1 gap-4">
                 <button onClick={() => setShowDriverLogin(true)} className="group flex items-center p-6 bg-white rounded-[2rem] border-2 border-transparent hover:border-indigo-600 shadow-xl transition-all text-left">
                   <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
@@ -542,8 +532,8 @@ const App: React.FC = () => {
 
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
                   <p className="text-[11px] text-blue-700 font-medium">
-                    <span className="font-black">Demo Credentials:</span><br/>
-                    Driver ID: 41<br/>
+                    <span className="font-black">Demo Credentials:</span><br />
+                    Driver ID: 41<br />
                     Password: 123
                   </p>
                 </div>
@@ -587,7 +577,7 @@ const App: React.FC = () => {
               <div className="bg-white rounded-[3rem] p-12 text-center shadow-2xl border border-slate-100">
                 <h2 className="text-3xl font-black mb-2">Dispatch System</h2>
                 <p className="text-slate-500 mb-8">Select your assigned bus and start broadcasting your location</p>
-                
+
                 <div className="mb-10 max-w-sm mx-auto text-left">
                   <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3 px-2">
                     📍 Select Assigned Vehicle
@@ -599,7 +589,7 @@ const App: React.FC = () => {
                       </div>
                     ) : (
                       buses.map(b => (
-                        <button 
+                        <button
                           key={b.id}
                           onClick={() => {
                             setSelectedBus(b);
@@ -620,12 +610,12 @@ const App: React.FC = () => {
 
                 <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-8 text-left">
                   <p className="text-xs text-blue-700 font-medium">
-                    <span className="font-black">ℹ️ Next Step:</span> Select a bus, then click "START BROADCASTING" to begin your shift. 
+                    <span className="font-black">ℹ️ Next Step:</span> Select a bus, then click "START BROADCASTING" to begin your shift.
                     You'll be asked to check in with camera and location.
                   </p>
                 </div>
 
-                <button 
+                <button
                   disabled={!selectedBus || selectedBus.status === 'MAINTENANCE'}
                   onClick={() => {
                     if (selectedBus) {
@@ -633,11 +623,10 @@ const App: React.FC = () => {
                       handleStartBroadcasting();
                     }
                   }}
-                  className={`px-12 py-5 rounded-[2rem] font-black text-lg shadow-2xl transition-all ${
-                    selectedBus && selectedBus.status !== 'MAINTENANCE'
+                  className={`px-12 py-5 rounded-[2rem] font-black text-lg shadow-2xl transition-all ${selectedBus && selectedBus.status !== 'MAINTENANCE'
                       ? 'bg-indigo-600 text-white shadow-indigo-100 hover:bg-indigo-700 active:scale-95 cursor-pointer'
                       : 'bg-slate-100 text-slate-400 cursor-not-allowed opacity-50'
-                  }`}
+                    }`}
                 >
                   {!selectedBus ? (
                     '→ Select a Bus First'
@@ -651,10 +640,10 @@ const App: React.FC = () => {
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-8">
                 <div className="lg:col-span-3 min-h-0">
-                  <MapComponent 
-                    busLocation={currentLocation || undefined} 
-                    isDriver 
-                    alternativeRoute={alternativeRoute} 
+                  <MapComponent
+                    busLocation={currentLocation || undefined}
+                    isDriver
+                    alternativeRoute={alternativeRoute}
                     onAcceptRoute={handleAcceptReroute}
                   />
                 </div>
@@ -676,11 +665,11 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   </div>
-                  <button 
+                  <button
                     onClick={() => {
                       setIsTracking(false);
                       setCurrentLocation(null);
-                      if (selectedBus) mockDatabase.updateBusLocation(selectedBus.id, { lat: 0, lng: 0, timestamp: Date.now() });
+                      if (selectedBus) firebaseDatabase.updateBusLocation(selectedBus.id, { lat: 0, lng: 0, timestamp: Date.now() });
                     }}
                     className="w-full py-6 bg-red-50 text-red-600 rounded-[2rem] font-black border-2 border-red-100 hover:bg-red-100 transition-colors shadow-lg"
                   >
@@ -696,7 +685,7 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-black mb-6 tracking-tighter">Campus Fleet</h2>
               <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
                 {buses.map(bus => (
-                  <button 
+                  <button
                     key={bus.id}
                     onClick={() => handleStudentSelectBus(bus)}
                     className={`flex-shrink-0 px-8 py-4 rounded-[2rem] font-black transition-all border-2 flex flex-col items-center gap-2 ${selectedBus?.id === bus.id ? 'bg-indigo-600 text-white border-indigo-600 shadow-xl scale-105' : 'bg-white text-slate-500 hover:bg-slate-50 border-slate-100 shadow-sm'}`}
@@ -757,7 +746,7 @@ const App: React.FC = () => {
       </main>
 
       {isAttendanceOpen && (
-        <AttendanceModule 
+        <AttendanceModule
           onSuccess={handleAttendanceSuccess}
           onCancel={() => setIsAttendanceOpen(false)}
         />
