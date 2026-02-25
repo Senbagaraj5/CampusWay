@@ -11,9 +11,12 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [react()],
     define: {
-      'process.env.API_KEY': JSON.stringify(env.VITE_GOOGLE_MAPS_API_KEY || env.GEMINI_API_KEY),
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.VITE_GOOGLE_MAPS_API_KEY)
+      'process.env': {
+        API_KEY: env.VITE_GOOGLE_MAPS_API_KEY || env.GEMINI_API_KEY,
+        GEMINI_API_KEY: env.GEMINI_API_KEY,
+        GOOGLE_MAPS_API_KEY: env.VITE_GOOGLE_MAPS_API_KEY,
+        REACT_APP_API_URL: env.REACT_APP_API_URL
+      }
     },
     build: {
       rollupOptions: {

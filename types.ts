@@ -16,6 +16,15 @@ export interface Bus {
   route: string;
   status: 'ACTIVE' | 'INACTIVE' | 'MAINTENANCE';
   lastLocation?: Location;
+  updatedAt?: number; // For "LIVE" status calculation
+}
+
+export interface DriverProfile {
+  uid: string;
+  busId: string;
+  username: string;
+  password?: string; // Only for seed/initial
+  mustChangePassword: boolean;
 }
 
 export interface AttendanceRecord {

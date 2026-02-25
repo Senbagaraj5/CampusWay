@@ -2,11 +2,16 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UserRole, Bus, Location, AttendanceRecord } from './types';
 import { firebaseDatabase } from './services/firebaseDatabase';
+import { Capacitor } from '@capacitor/core';
 import { googleMapsService } from './services/googleMapsService';
 import { getSmartETA, getRouteAssistant, getTrafficAnalysis } from './services/geminiService';
 import MapComponent from './components/MapComponent';
 import AttendanceModule from './components/AttendanceModule';
 import ChatModule from './components/ChatModule';
+import StudentTrackingPage from './components/StudentTrackingPage';
+import StudentBusList from './components/StudentBusList';
+import { DriverProfile } from './types';
+import collegeLogo from './college_logo.png';
 
 const App: React.FC = () => {
   const [role, setRole] = useState<UserRole | null>(null);
@@ -27,6 +32,9 @@ const App: React.FC = () => {
   const [driverId, setDriverId] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [currentDriver, setCurrentDriver] = useState<DriverProfile | null>(null);
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
 
   // Alternative route state
   const [alternativeRoute, setAlternativeRoute] = useState<{ id: number, timeSaved: number } | null>(null);
@@ -43,7 +51,41 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  // Keep selectedBus in sync with buses state (updated via Firebase listener)
+  // Back button and exit logic
+  const backPressTime = useRef<number>(0);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let backListener: any;
+    if (Capacitor.isNativePlatform()) {
+      import('@capacitor/app').then(({ App: CapApp }) => {
+        backListener = CapApp.addListener('backButton', () => {
+          // 1. If map is open, let StudentTrackingPage handle it
+          if (selectedBus) return;
+
+          // 2. Clear other states if open
+          if (role) {
+            setRole(null);
+            return;
+          }
+
+          // 3. Home Screen -> Exit safety
+          const now = Date.now();
+          if (now - backPressTime.current < 2000) {
+            CapApp.exitApp();
+          } else {
+            backPressTime.current = now;
+            setToastMessage('Press back again to exit');
+            setTimeout(() => setToastMessage(null), 2000);
+          }
+        });
+      });
+    }
+    return () => {
+      if (backListener) backListener.then((l: any) => l.remove());
+    };
+  }, [role, selectedBus]);
+
   useEffect(() => {
     if (selectedBus) {
       const updatedBus = buses.find(b => b.id === selectedBus.id);
@@ -346,7 +388,6 @@ const App: React.FC = () => {
     }
     setIsLoading(false);
   };
-
   const handleAcceptReroute = () => {
     setAlternativeRoute(null);
     setAiMessage("Route updated! Navigating through the faster alternative.");
@@ -358,15 +399,45 @@ const App: React.FC = () => {
       return;
     }
 
-    const isValid = await firebaseDatabase.validateDriverLogin(driverId, password);
-    if (isValid) {
+    const result = await firebaseDatabase.validateDriverLogin(driverId, password);
+    if (result.success && result.driver) {
       setLoginError('');
-      setRole('DRIVER');
-      setShowDriverLogin(false);
+      const driver = result.driver;
+      setCurrentDriver(driver);
+
+      if (driver.mustChangePassword) {
+        setShowPasswordChange(true);
+      } else {
+        localStorage.setItem("driverUid", driver.uid);
+        localStorage.setItem("driverBusId", driver.busId);
+        setRole('DRIVER');
+        setShowDriverLogin(false);
+        // Auto-select the bus assigned to this driver
+        const bus = buses.find(b => b.id === driver.busId);
+        if (bus) setSelectedBus(bus);
+      }
+
       setDriverId('');
       setPassword('');
     } else {
       setLoginError('Invalid Driver ID or Password');
+    }
+  };
+
+  const handlePasswordUpdate = async () => {
+    if (newPassword.length < 6) {
+      setLoginError('Password must be at least 6 characters');
+      return;
+    }
+    if (currentDriver) {
+      localStorage.setItem("driverUid", currentDriver.uid);
+      localStorage.setItem("driverBusId", currentDriver.busId);
+      setRole('DRIVER');
+      setShowPasswordChange(false);
+      setShowDriverLogin(false);
+      const bus = buses.find(b => b.id === currentDriver.busId);
+      if (bus) setSelectedBus(bus);
+      setNewPassword('');
     }
   };
 
@@ -417,128 +488,175 @@ const App: React.FC = () => {
 
   if (!role) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-blue-50 flex items-center justify-center p-6">
-        <div className="max-w-md w-full space-y-8">
+      <div className="min-h-[100dvh] bg-slate-50 flex items-center justify-center p-4">
+        <div className="max-w-[420px] w-full flex flex-col space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
           {!showDriverLogin ? (
             <>
               <div className="text-center">
-                {/* College Logo */}
                 <div className="mb-8 flex justify-center">
-                  <div className="h-40 w-40 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-full flex items-center justify-center shadow-xl drop-shadow-lg">
-                    <div className="text-center">
-                      <div className="text-white text-lg font-black mb-1">Mount Zion</div>
-                      <div className="text-white text-xs font-bold">College of Engineering</div>
-                    </div>
+                  <div className="h-28 w-28 flex items-center justify-center active:scale-95 transition-all">
+                    <img src={collegeLogo} alt="College Logo" className="w-full h-full object-contain" />
                   </div>
                 </div>
-                <h1 className="text-4xl font-black text-slate-900 tracking-tighter">CampusWay</h1>
-                <p className="mt-2 text-slate-500 font-medium">Real-time college transit ecosystem</p>
-                <p className="mt-1 text-xs font-semibold text-indigo-600">Mount Zion College of Engineering and Technology</p>
+                <h1 className="text-4xl font-black text-slate-900 tracking-tighter mb-1">
+                  Campus<span className="text-indigo-500">Way</span>
+                </h1>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-8">Fleet Tracking System</p>
               </div>
 
-              <div className="grid grid-cols-1 gap-4">
-                <button onClick={() => setShowDriverLogin(true)} className="group flex items-center p-6 bg-white rounded-[2rem] border-2 border-transparent hover:border-indigo-600 shadow-xl transition-all text-left">
-                  <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                    <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+              <div className="space-y-4">
+                <button
+                  onClick={() => setShowDriverLogin(true)}
+                  className="group w-full flex items-center p-5 bg-white rounded-[2rem] border-2 border-slate-100 hover:border-indigo-600 shadow-sm active:scale-[0.98] transition-all text-left"
+                >
+                  <div className="flex-shrink-0 w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
                   </div>
                   <div className="ml-4">
-                    <p className="text-xl font-black text-slate-900">Driver Portal</p>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Shift Management</p>
+                    <p className="text-lg font-black text-slate-900 leading-tight">Driver Portal</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Shift Management</p>
                   </div>
                 </button>
 
-                <button onClick={() => setRole('STUDENT')} className="group flex items-center p-6 bg-white rounded-[2rem] border-2 border-transparent hover:border-indigo-600 shadow-xl transition-all text-left">
-                  <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-all">
-                    <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                <button
+                  onClick={() => setRole('STUDENT')}
+                  className="group w-full flex items-center p-5 bg-white rounded-[2rem] border-2 border-slate-100 hover:border-blue-600 shadow-sm active:scale-[0.98] transition-all text-left"
+                >
+                  <div className="flex-shrink-0 w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-all">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
                   </div>
                   <div className="ml-4">
-                    <p className="text-xl font-black text-slate-900">Student Portal</p>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Live Bus Tracking</p>
+                    <p className="text-lg font-black text-slate-900 leading-tight">Student Portal</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Live Bus Tracking</p>
                   </div>
                 </button>
+              </div>
+
+              <div className="pt-8 text-center text-[10px] font-bold text-slate-300 uppercase tracking-widest">
+                Version 2.4.0 • Secured by Firebase
               </div>
             </>
+
           ) : (
-            <>
+            <div className="space-y-6 w-full animate-in fade-in zoom-in-95 duration-300">
               <div className="text-center">
-                <div className="mb-8 flex justify-center">
-                  <div className="h-40 w-40 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-full flex items-center justify-center shadow-xl drop-shadow-lg">
-                    <div className="text-center">
-                      <div className="text-white text-lg font-black mb-1">Mount Zion</div>
-                      <div className="text-white text-xs font-bold">College of Engineering</div>
-                    </div>
+                <div className="mb-6 flex justify-center">
+                  <div
+                    className="h-20 w-20 flex items-center justify-center cursor-pointer active:scale-90 transition-all"
+                    onClick={() => setShowDriverLogin(false)}
+                  >
+                    <img src={collegeLogo} alt="Logo" className="w-full h-full object-contain" />
                   </div>
                 </div>
-                <h1 className="text-4xl font-black text-slate-900 tracking-tighter">Driver Login</h1>
-                <p className="mt-2 text-slate-500 font-medium">Secure access to the dispatch system</p>
+                <h2 className="text-2xl font-black text-slate-900 tracking-tighter">Driver Authentication</h2>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Access Secure Dispatch</p>
               </div>
 
-              <div className="bg-white p-8 rounded-[2rem] shadow-xl border border-slate-100 space-y-6">
-                <div>
-                  <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3">Driver ID</label>
-                  <input
-                    type="text"
-                    value={driverId}
-                    onChange={(e) => {
-                      setDriverId(e.target.value);
-                      setLoginError('');
-                    }}
-                    placeholder="Enter your Driver ID"
-                    className="w-full px-4 py-3 border-2 border-slate-100 rounded-xl focus:border-indigo-600 focus:outline-none transition-all text-slate-900 font-medium"
-                  />
-                </div>
+              <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border border-slate-100 space-y-4">
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Terminal ID</label>
+                    <input
+                      type="text"
+                      value={driverId}
+                      onChange={(e) => {
+                        setDriverId(e.target.value);
+                        setLoginError('');
+                      }}
+                      placeholder="e.g. drv_01"
+                      className="w-full px-5 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-600 focus:bg-white rounded-2xl outline-none transition-all text-sm font-bold text-slate-900 placeholder:text-slate-300"
+                    />
+                  </div>
 
-                <div>
-                  <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3">Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      setLoginError('');
-                    }}
-                    placeholder="Enter your password"
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') handleDriverLogin();
-                    }}
-                    className="w-full px-4 py-3 border-2 border-slate-100 rounded-xl focus:border-indigo-600 focus:outline-none transition-all text-slate-900 font-medium"
-                  />
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Access Key</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        setLoginError('');
+                      }}
+                      placeholder="••••••••"
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter') handleDriverLogin();
+                      }}
+                      className="w-full px-5 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-600 focus:bg-white rounded-2xl outline-none transition-all text-sm font-bold text-slate-900 placeholder:text-slate-300"
+                    />
+                  </div>
                 </div>
 
                 {loginError && (
-                  <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4">
-                    <p className="text-sm font-bold text-red-700">❌ {loginError}</p>
+                  <div className="bg-red-50 border border-red-100 rounded-2xl p-3 animate-in fade-in slide-in-from-top-2">
+                    <p className="text-[10px] font-black text-red-600 flex items-center gap-2 uppercase tracking-wide">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      {loginError}
+                    </p>
                   </div>
                 )}
 
-                <button
-                  onClick={handleDriverLogin}
-                  className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-lg hover:bg-indigo-700 active:scale-95 transition-all uppercase tracking-wider"
-                >
-                  Sign In
-                </button>
+                <div className="pt-2 space-y-2">
+                  <button
+                    onClick={handleDriverLogin}
+                    className="w-full py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black text-xs shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all uppercase tracking-[0.2em] flex items-center justify-center gap-3"
+                  >
+                    <span>Authenticate</span>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+                  </button>
 
-                <button
-                  onClick={() => {
-                    setShowDriverLogin(false);
-                    setDriverId('');
-                    setPassword('');
-                    setLoginError('');
-                  }}
-                  className="w-full py-3 bg-slate-100 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all"
-                >
-                  Back
-                </button>
-
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
-                  <p className="text-[11px] text-blue-700 font-medium">
-                    <span className="font-black">Demo Credentials:</span><br />
-                    Driver ID: 41<br />
-                    Password: 123
-                  </p>
+                  <button
+                    onClick={() => {
+                      setShowDriverLogin(false);
+                      setDriverId('');
+                      setPassword('');
+                      setLoginError('');
+                    }}
+                    className="w-full py-4 text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
+                  >
+                    Cancel & Return
+                  </button>
                 </div>
               </div>
-            </>
+
+
+            </div>
+          )}
+
+          {/* Forced Password Change Modal */}
+          {showPasswordChange && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-6 animate-in fade-in duration-300">
+              <div className="bg-white max-w-sm w-full p-8 rounded-[2.5rem] shadow-2xl space-y-6">
+                <div className="text-center">
+                  <div className="w-16 h-16 bg-amber-50 text-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                  </div>
+                  <h2 className="text-2xl font-black text-slate-900 tracking-tighter">Security Update</h2>
+                  <p className="text-slate-500 text-sm font-medium">Please set a new password for your account</p>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3">New Password</label>
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Minimum 6 characters"
+                      className="w-full px-4 py-3 border-2 border-slate-100 rounded-xl focus:border-indigo-600 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  {loginError && <p className="text-xs font-bold text-red-500">{loginError}</p>}
+
+                  <button
+                    onClick={handlePasswordUpdate}
+                    className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-lg hover:bg-indigo-700 active:scale-95 transition-all uppercase tracking-wider"
+                  >
+                    Update & Continue
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -546,94 +664,113 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="w-full bg-slate-50 overflow-y-auto">
-      <nav className="bg-white/80 backdrop-blur-md px-4 md:px-8 py-5 border-b border-slate-100 sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setRole(null)}>
-            <div className="h-10 w-10 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform font-black text-white text-xs">
-              MZ
+    <div className="w-full h-[100dvh] flex flex-col bg-slate-50 overflow-hidden">
+      <nav className="flex-shrink-0 bg-white/90 backdrop-blur-xl px-4 pt-[calc(env(safe-area-inset-top)+10px)] pb-4 border-b border-slate-100 z-50">
+        <div className="max-w-[420px] lg:max-w-6xl mx-auto flex items-center justify-between">
+          <div
+            className="flex items-center gap-3 cursor-pointer active:scale-95 transition-all group"
+            onClick={() => {
+              setRole(null);
+              localStorage.removeItem("driverBusId");
+              localStorage.removeItem("driverUid");
+            }}
+          >
+            <div className="h-10 flex items-center justify-center transition-transform group-hover:scale-105">
+              <img src={collegeLogo} alt="College Logo" className="h-full w-auto object-contain" />
             </div>
-            <span className="font-black text-lg md:text-2xl tracking-tighter text-indigo-600">CampusWay</span>
+            <div className="flex flex-col">
+              <span className="font-black text-lg tracking-tighter text-slate-900 leading-none">
+                Campus<span className="text-indigo-500">Way</span>
+              </span>
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mt-1">Fleet Tracker</span>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-3 md:px-4 py-2 bg-slate-100 rounded-2xl">
-              <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></div>
-              <span className="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-widest">{role} ACTIVE</span>
+
+          <div className="flex items-center gap-2">
+            <div className="px-2.5 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg">
+              <span className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{role}</span>
             </div>
-            <div className="flex items-center gap-1 px-2 md:px-3 py-2 bg-green-50 rounded-xl border border-green-200">
-              <svg className="w-4 h-4 text-green-600 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              <span className="text-[8px] md:text-[9px] font-bold text-green-700 uppercase tracking-tighter">3s</span>
-            </div>
+            <button
+              onClick={() => setRole(null)}
+              className="p-2 text-slate-400 hover:text-slate-600 active:scale-90 transition-all"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+            </button>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-6xl mx-auto p-4 md:p-8 space-y-8">
+      <main className="flex-grow overflow-y-auto p-4">
         {role === 'DRIVER' ? (
-          <div className="space-y-8">
+          <div className="max-w-[420px] mx-auto w-full space-y-6 lg:max-w-6xl animate-in fade-in duration-500">
             {!isTracking ? (
-              <div className="bg-white rounded-[3rem] p-12 text-center shadow-2xl border border-slate-100">
-                <h2 className="text-3xl font-black mb-2">Dispatch System</h2>
-                <p className="text-slate-500 mb-8">Select your assigned bus and start broadcasting your location</p>
+              <div className="bg-white rounded-[2.5rem] p-6 text-center shadow-2xl border border-slate-100">
+                <div className="flex flex-col items-center mb-6">
+                  <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mb-3 text-2xl animate-bounce duration-[2000ms]">🚌</div>
+                  <h2 className="text-2xl font-black text-slate-900 tracking-tighter leading-none">Dispatch Hub</h2>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Vehicle Assignment</p>
+                </div>
 
-                <div className="mb-10 max-w-sm mx-auto text-left">
-                  <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3 px-2">
-                    📍 Select Assigned Vehicle
-                  </label>
-                  <div className="space-y-2">
-                    {buses.length === 0 ? (
-                      <div className="p-4 bg-slate-50 rounded-2xl text-center text-slate-500 text-sm">
-                        No buses available
-                      </div>
-                    ) : (
-                      buses.map(b => (
+                <div className="mb-8 text-left">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 ml-2">Active Unit</label>
+                  <div className="space-y-3">
+                    {(() => {
+                      const driverBusId = localStorage.getItem("driverBusId");
+                      const assignedBuses = buses.filter(b => b.id === driverBusId);
+
+                      if (assignedBuses.length === 0) {
+                        return (
+                          <div className="p-8 bg-slate-50 rounded-[2rem] text-center border-2 border-dashed border-slate-200">
+                            <p className="text-slate-500 font-bold mb-1">No Unit Assigned</p>
+                            <p className="text-[9px] text-slate-400 uppercase tracking-widest">Contact Dispatch Control</p>
+                          </div>
+                        );
+                      }
+
+                      return assignedBuses.map(b => (
                         <button
                           key={b.id}
                           onClick={() => {
                             setSelectedBus(b);
-                            console.log('🚌 Bus selected:', b.busNumber, '- Status:', b.status);
+                            console.log('🚌 Bus selected:', b.busNumber);
                           }}
-                          className={`w-full p-4 rounded-2xl border-2 transition-all flex items-center justify-between ${selectedBus?.id === b.id ? 'border-indigo-600 bg-indigo-50 shadow-md' : 'border-slate-100 bg-slate-50 hover:border-slate-200'}`}
+                          className={`w-full p-5 rounded-[1.8rem] border-2 transition-all flex items-center justify-between ${selectedBus?.id === b.id ? 'border-indigo-600 bg-indigo-50 shadow-md ring-4 ring-indigo-500/10' : 'border-slate-50 bg-slate-50'}`}
                         >
-                          <div className="flex items-center gap-3">
-                            <span className="font-bold text-slate-900">{b.busNumber}</span>
-                            <span className="text-xs text-slate-500">— {b.route}</span>
+                          <div className="flex items-center gap-4">
+                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl font-bold ${selectedBus?.id === b.id ? 'bg-indigo-600 text-white' : 'bg-white text-slate-400'}`}>
+                              {b.busNumber}
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="font-black text-slate-900 text-base tracking-tight leading-none mb-1">Bus {b.busNumber}</span>
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide truncate max-w-[150px]">{b.route}</span>
+                            </div>
                           </div>
                           {getStatusBadge(b.status)}
                         </button>
                       ))
-                    )}
+                    })()}
                   </div>
-                </div>
-
-                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-8 text-left">
-                  <p className="text-xs text-blue-700 font-medium">
-                    <span className="font-black">ℹ️ Next Step:</span> Select a bus, then click "START BROADCASTING" to begin your shift.
-                    You'll be asked to check in with camera and location.
-                  </p>
                 </div>
 
                 <button
                   disabled={!selectedBus || selectedBus.status === 'MAINTENANCE'}
                   onClick={() => {
                     if (selectedBus) {
-                      console.log('� Starting broadcast for:', selectedBus.busNumber);
+                      console.log('🚀 Starting broadcast:', selectedBus.busNumber);
                       handleStartBroadcasting();
                     }
                   }}
-                  className={`px-12 py-5 rounded-[2rem] font-black text-lg shadow-2xl transition-all ${selectedBus && selectedBus.status !== 'MAINTENANCE'
-                      ? 'bg-indigo-600 text-white shadow-indigo-100 hover:bg-indigo-700 active:scale-95 cursor-pointer'
-                      : 'bg-slate-100 text-slate-400 cursor-not-allowed opacity-50'
+                  className={`w-full py-5 rounded-[1.8rem] font-black text-base shadow-xl transition-all ${selectedBus && selectedBus.status !== 'MAINTENANCE'
+                    ? 'bg-indigo-600 text-white shadow-indigo-200 active:scale-95'
+                    : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                     }`}
                 >
                   {!selectedBus ? (
-                    '→ Select a Bus First'
+                    'SELECT UNIT TO BROADCAST'
                   ) : selectedBus.status === 'MAINTENANCE' ? (
-                    '🔧 VEHICLE IN SHOP'
+                    '🔧 VEHICLE IN MAINTENANCE'
                   ) : (
-                    '🚀 START BROADCASTING'
+                    'START BROADCASTING NOW'
                   )}
                 </button>
               </div>
@@ -681,69 +818,22 @@ const App: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-8">
-            <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-slate-100">
-              <h2 className="text-2xl font-black mb-6 tracking-tighter">Campus Fleet</h2>
-              <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                {buses.map(bus => (
-                  <button
-                    key={bus.id}
-                    onClick={() => handleStudentSelectBus(bus)}
-                    className={`flex-shrink-0 px-8 py-4 rounded-[2rem] font-black transition-all border-2 flex flex-col items-center gap-2 ${selectedBus?.id === bus.id ? 'bg-indigo-600 text-white border-indigo-600 shadow-xl scale-105' : 'bg-white text-slate-500 hover:bg-slate-50 border-slate-100 shadow-sm'}`}
-                  >
-                    <span className="text-lg">{bus.busNumber}</span>
-                    {getStatusBadge(bus.status)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {selectedBus && (
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-8 relative min-h-0">
-                <div className="lg:col-span-3 min-h-0">
-                  <MapComponent busLocation={selectedBus.lastLocation} userLocation={studentLocation} />
-                </div>
-                <div className="space-y-4 md:space-y-8">
-                  {isLoading ? (
-                    <div className="bg-white p-8 rounded-[2.5rem] animate-pulse space-y-4">
-                      <div className="h-8 bg-slate-100 rounded w-1/2"></div>
-                      <div className="h-32 bg-slate-100 rounded w-full"></div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className={`p-8 rounded-[2.5rem] shadow-xl text-white transition-colors duration-500 ${selectedBus.status === 'ACTIVE' ? 'bg-indigo-600 shadow-indigo-200' : 'bg-slate-800 shadow-slate-200'}`}>
-                        <p className="text-white/60 text-[10px] font-black uppercase tracking-[0.2em] mb-3">
-                          {selectedBus.status === 'ACTIVE' ? 'Est. Arrival' : 'Current Status'}
-                        </p>
-                        <h4 className="text-5xl font-black mb-2 tracking-tighter">
-                          {selectedBus.status === 'ACTIVE' ? (eta !== null ? `${eta}m` : 'Live') : selectedBus.status}
-                        </h4>
-                        <p className="text-xs font-bold opacity-70 leading-tight">{selectedBus.route}</p>
-                      </div>
-
-                      <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-slate-100">
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-8 h-8 bg-indigo-100 rounded-xl flex items-center justify-center">
-                            <svg className="w-5 h-5 text-indigo-600" fill="currentColor" viewBox="0 0 20 20"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z"></path></svg>
-                          </div>
-                          <h4 className="font-black text-slate-900 text-xs uppercase tracking-widest">Smart Assistant</h4>
-                        </div>
-                        <p className="text-sm text-slate-500 font-medium italic leading-relaxed">
-                          "{aiMessage}"
-                        </p>
-                        <button onClick={() => setIsChatOpen(true)} className="mt-6 w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] tracking-widest uppercase hover:bg-slate-800 transition-all flex items-center justify-center gap-2">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
-                          Open Support
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-                {isChatOpen && <ChatModule bus={selectedBus} onClose={() => setIsChatOpen(false)} />}
-              </div>
+            {!selectedBus ? (
+              <StudentBusList
+                buses={buses}
+                onSelectBus={handleStudentSelectBus}
+              />
+            ) : (
+              <StudentTrackingPage
+                selectedBus={selectedBus}
+                studentLocation={studentLocation}
+                onBack={() => setSelectedBus(null)}
+                eta={eta}
+              />
             )}
           </div>
         )}
-      </main>
+      </main >
 
       {isAttendanceOpen && (
         <AttendanceModule
@@ -751,7 +841,16 @@ const App: React.FC = () => {
           onCancel={() => setIsAttendanceOpen(false)}
         />
       )}
-    </div>
+
+      {/* Local Toast Notification */}
+      {
+        toastMessage && (
+          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900/90 backdrop-blur-md text-white px-6 py-3 rounded-full text-xs font-black shadow-2xl z-[100] animate-in slide-in-from-bottom duration-300">
+            {toastMessage}
+          </div>
+        )
+      }
+    </div >
   );
 };
 

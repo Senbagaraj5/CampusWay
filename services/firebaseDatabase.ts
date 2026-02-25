@@ -1,53 +1,70 @@
 import { database } from './firebaseConfig';
 import { ref, get, set, push, update, onValue, off } from 'firebase/database';
-import { Bus, Location, AttendanceRecord } from '../types';
+import { Bus, Location, AttendanceRecord, DriverProfile } from '../types';
 
-const DEFAULT_BUSES: Bus[] = [
-    { id: '1', busNumber: '41', driverName: 'Sivabalan', route: 'Campus Main Route', status: 'INACTIVE' },
-];
+const BUS_IDS = ['24', '23', '18', '7', '40', '5', '32', '17', '6', '16', '31', '49', '15', '2', '4', '42', '41', '3'];
 
-// Driver credentials stored in Firebase at /drivers/{driverId}
-// Fallback to hardcoded credentials if Firebase read fails
-const FALLBACK_CREDENTIALS: Record<string, string> = {
-    '41': '123',
-};
+const DEFAULT_BUSES: Bus[] = BUS_IDS.map(id => ({
+    id,
+    busNumber: id,
+    driverName: `Driver ${id}`,
+    route: `Campus Route ${id}`,
+    status: 'INACTIVE',
+    updatedAt: Date.now()
+}));
 
 export const firebaseDatabase = {
     /**
-     * Validate driver login against Firebase /drivers/{driverId}
-     * Falls back to hardcoded credentials if Firebase is unreachable
+     * Validate driver login and check if password change is required
      */
-    validateDriverLogin: async (driverId: string, password: string): Promise<boolean> => {
+    validateDriverLogin: async (username: string, password: string): Promise<{ success: boolean, driver?: DriverProfile }> => {
         try {
-            const snapshot = await get(ref(database, `drivers/${driverId}`));
+            const snapshot = await get(ref(database, 'drivers'));
             if (snapshot.exists()) {
-                const data = snapshot.val();
-                return data.password === password;
+                const drivers: Record<string, DriverProfile> = snapshot.val();
+                const driver = Object.values(drivers).find(d => d.username === username && d.password === password);
+                if (driver) {
+                    return { success: true, driver };
+                }
             }
-            // If not in Firebase, check fallback
-            return FALLBACK_CREDENTIALS[driverId] === password;
+            return { success: false };
         } catch (error) {
-            console.error('Firebase login check failed, using fallback:', error);
-            return FALLBACK_CREDENTIALS[driverId] === password;
+            console.error('Firebase login check failed:', error);
+            return { success: false };
         }
     },
 
     /**
-     * Get all buses from Firebase /buses
-     * Seeds default data if the path doesn't exist yet
+     * Update driver password and clear mustChangePassword flag
+     */
+    updateDriverPassword: async (uid: string, newPassword: string): Promise<void> => {
+        try {
+            await update(ref(database, `drivers/${uid}`), {
+                password: newPassword,
+                mustChangePassword: false
+            });
+        } catch (error) {
+            console.error('Failed to update driver password:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get all buses from Firebase
      */
     getBuses: async (): Promise<Bus[]> => {
         try {
             const snapshot = await get(ref(database, 'buses'));
             if (snapshot.exists()) {
                 const data = snapshot.val();
-                // Firebase stores as object keyed by ID, convert to array
-                if (Array.isArray(data)) {
-                    return data.filter(Boolean);
+                let buses: Bus[] = Array.isArray(data) ? data.filter(Boolean) : Object.values(data);
+                // If new buses added in code, re-seed to include them
+                if (buses.length < BUS_IDS.length) {
+                    await firebaseDatabase.seedDefaultData();
+                    return firebaseDatabase.getBuses();
                 }
-                return Object.values(data);
+                return buses;
             }
-            // Seed default data if empty
             await firebaseDatabase.seedDefaultData();
             return DEFAULT_BUSES;
         } catch (error) {
@@ -57,13 +74,14 @@ export const firebaseDatabase = {
     },
 
     /**
-     * Update bus location in Firebase - triggers real-time listeners automatically
+     * Update bus location with "Live" status logic
      */
     updateBusLocation: async (busId: string, location: Location): Promise<void> => {
         try {
             await update(ref(database, `buses/${busId}`), {
                 lastLocation: location,
                 status: 'ACTIVE',
+                updatedAt: Date.now()
             });
         } catch (error) {
             console.error('Failed to update bus location in Firebase:', error);
@@ -71,7 +89,7 @@ export const firebaseDatabase = {
     },
 
     /**
-     * Save attendance record to Firebase /attendance
+     * Save attendance record
      */
     saveAttendance: async (record: AttendanceRecord): Promise<void> => {
         try {
@@ -82,51 +100,61 @@ export const firebaseDatabase = {
     },
 
     /**
-     * Subscribe to real-time bus updates from Firebase
-     * Returns an unsubscribe function
+     * Subscribe to real-time bus updates
      */
     onBusesUpdate: (callback: (buses: Bus[]) => void): (() => void) => {
         const busesRef = ref(database, 'buses');
         const listener = onValue(busesRef, (snapshot) => {
             if (snapshot.exists()) {
                 const data = snapshot.val();
-                let buses: Bus[];
-                if (Array.isArray(data)) {
-                    buses = data.filter(Boolean);
-                } else {
-                    buses = Object.values(data);
-                }
+                let buses: Bus[] = Array.isArray(data) ? data.filter(Boolean) : Object.values(data);
                 callback(buses);
             }
-        }, (error) => {
-            console.error('Firebase real-time listener error:', error);
         });
-
-        // Return unsubscribe function
         return () => off(busesRef, 'value', listener);
     },
 
     /**
-     * Seed default bus and driver data into Firebase
+     * Seed driver accounts and buses for the entire fleet
      */
     seedDefaultData: async (): Promise<void> => {
         try {
-            // Seed buses
             const busData: Record<string, Bus> = {};
+            const driverData: Record<string, DriverProfile> = {};
+
             DEFAULT_BUSES.forEach(bus => {
                 busData[bus.id] = bus;
+                // Generate driver profile
+                const uid = `drv_${bus.id}`;
+                driverData[uid] = {
+                    uid,
+                    busId: bus.id,
+                    username: `bus_${bus.id}`,
+                    password: 'Campus@123',
+                    mustChangePassword: true
+                };
             });
+
             await set(ref(database, 'buses'), busData);
-
-            // Seed driver credentials
-            await set(ref(database, 'drivers/41'), { password: '123' });
-
-            console.log('✅ Default data seeded to Firebase');
+            await set(ref(database, 'drivers'), driverData);
+            console.log('✅ 17 Bus Accounts and Driver Profiles seeded');
         } catch (error) {
             console.error('Failed to seed default data:', error);
         }
     },
+
+    /**
+     * Listen for updates to a specific bus
+     */
+    onBusUpdate: (busId: string, callback: (bus: Bus) => void) => {
+        const busRef = ref(database, `buses/bus_${busId}`);
+        const unsubscribe = onValue(busRef, (snapshot) => {
+            if (snapshot.exists()) {
+                callback(snapshot.val());
+            }
+        });
+        return unsubscribe;
+    },
 };
 
-// Backward-compatible export so existing imports still work
 export const mockDatabase = firebaseDatabase;
