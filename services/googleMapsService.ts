@@ -6,12 +6,42 @@ import L from 'leaflet';
 
 export const googleMapsService = {
   /**
-   * Calculate distance between two locations (meters)
+   * FIX 12: Robust distance calculation with coordinate validation and sanity limits.
+   * Rejects [0,0], null, NaN. Ignores distances > 200km.
    */
-  calculateDistance: (from: Location, to: Location): number => {
+  calculateDistance: (from: Location | null, to: Location | null, debugInfo?: { lastUpdateTs?: number; driverOnline?: boolean }): number | null => {
+    if (!from || !to) return null;
+
+    const isInvalid = (l: Location) =>
+      (l.lat === 0 && l.lng === 0) ||
+      isNaN(l.lat) || isNaN(l.lng) ||
+      l.lat == null || l.lng == null;
+
+    if (isInvalid(from) || isInvalid(to)) {
+      console.warn("📍 Robust Distance Calc - Skipped due to invalid coords:", { from, to });
+      return null;
+    }
+
     const fromLatLng = L.latLng(from.lat, from.lng);
     const toLatLng = L.latLng(to.lat, to.lng);
-    return fromLatLng.distanceTo(toLatLng);
+    const distance = fromLatLng.distanceTo(toLatLng);
+
+    // Requirement B.5: Log debug values
+    console.log("📍 Robust Distance Calc:", {
+      studentLatLng: `(${from.lat.toFixed(6)}, ${from.lng.toFixed(6)})`,
+      busLatLng: `(${to.lat.toFixed(6)}, ${to.lng.toFixed(6)})`,
+      lastUpdateTs: debugInfo?.lastUpdateTs,
+      driverOnline: debugInfo?.driverOnline,
+      computedDistance: `${(distance / 1000).toFixed(2)} km`
+    });
+
+    // Requirement B.4: Sanity limit (200km)
+    if (distance > 200000) {
+      console.warn("📍 Robust Distance Calc - Ignored unrealistic distance (>200km):", (distance / 1000).toFixed(2), "km");
+      return null;
+    }
+
+    return distance;
   },
 
   /**
@@ -155,7 +185,7 @@ export const googleMapsService = {
     onError?: (error: GeolocationPositionError) => void
   ): number => {
     console.log('🔍 Starting high-accuracy GPS tracking...');
-    
+
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const location: Location = {
@@ -165,14 +195,14 @@ export const googleMapsService = {
           speed: position.coords.speed || undefined,
           accuracy: Math.round((position.coords.accuracy || 50) * 100) / 100,
         };
-        
+
         console.log('✅ GPS Update:', {
           latitude: location.lat.toFixed(6),
           longitude: location.lng.toFixed(6),
           accuracy_meters: location.accuracy,
           timestamp: new Date(location.timestamp).toLocaleTimeString(),
         });
-        
+
         onLocationChange(location);
       },
       (error) => {
@@ -185,7 +215,7 @@ export const googleMapsService = {
         timeout: 8000, // Wait up to 8 seconds for GPS fix
       }
     );
-    
+
     console.log('📍 Watch ID:', watchId);
     return watchId;
   },

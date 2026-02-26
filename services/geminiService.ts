@@ -1,10 +1,23 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { ChatMessage } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+
+// Defensive check to avoid crashing if key is missing
+let ai: GoogleGenAI | null = null;
+if (GEMINI_API_KEY) {
+  try {
+    ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    console.log("✨ Gemini AI initialized");
+  } catch (error) {
+    console.error("❌ Failed to initialize Gemini AI:", error);
+  }
+} else {
+  console.warn("⚠️ VITE_GEMINI_API_KEY is missing. AI features will run in fallback mode.");
+}
 
 export const getSmartETA = async (currentLocation: { lat: number, lng: number }, destination: string) => {
+  if (!ai) return 15; // Fallback
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -28,6 +41,7 @@ export const getSmartETA = async (currentLocation: { lat: number, lng: number },
 };
 
 export const getRouteAssistant = async (busNumber: string, status: string) => {
+  if (!ai) return `Bus ${busNumber} is currently ${status}. Tracking is live.`;
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -40,6 +54,7 @@ export const getRouteAssistant = async (busNumber: string, status: string) => {
 };
 
 export const getChatResponse = async (history: ChatMessage[], busInfo: string) => {
+  if (!ai) return "Support is currently busy. Please check the live map for updates.";
   try {
     const lastUserMessage = history[history.length - 1].text;
     const response = await ai.models.generateContent({
@@ -57,6 +72,7 @@ export const getChatResponse = async (history: ChatMessage[], busInfo: string) =
 };
 
 export const getTrafficAnalysis = async (location: { lat: number, lng: number }) => {
+  if (!ai) return { trafficLevel: "light", fasterRouteAvailable: false };
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",

@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Bus } from '../types';
+import { isBusActive } from '../services/locationUtils';
 
 interface StudentBusListProps {
     buses: Bus[];
@@ -7,11 +8,8 @@ interface StudentBusListProps {
 }
 
 const StudentBusCard: React.FC<{ bus: Bus; onClick: () => void }> = ({ bus, onClick }) => {
-    const isLive = useMemo(() => {
-        if (!bus.updatedAt || bus.status !== 'ACTIVE') return false;
-        const now = Date.now();
-        return (now - bus.updatedAt) <= 45000;
-    }, [bus.updatedAt, bus.status]);
+    // FIX 5, 12, 14: Use unified utility to reject [0,0] and check staleness
+    const isLive = isBusActive(bus);
 
     return (
         <button
@@ -28,7 +26,7 @@ const StudentBusCard: React.FC<{ bus: Bus; onClick: () => void }> = ({ bus, onCl
                 <div className={`flex items-center gap-1 px-2 py-1 rounded-lg border shrink-0 ${isLive ? 'bg-green-100 border-green-200' : 'bg-slate-50 border-slate-100'}`}>
                     <div className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-green-600 animate-pulse' : 'bg-slate-300'}`}></div>
                     <span className={`text-[8px] font-black uppercase tracking-wider ${isLive ? 'text-green-700' : 'text-slate-500'}`}>
-                        {isLive ? 'LIVE' : bus.status}
+                        {isLive ? 'LIVE' : 'OFFLINE'}
                     </span>
                 </div>
             </div>
@@ -52,8 +50,18 @@ const StudentBusCard: React.FC<{ bus: Bus; onClick: () => void }> = ({ bus, onCl
 };
 
 const StudentBusList: React.FC<StudentBusListProps> = ({ buses, onSelectBus }) => {
+    // FIX 5: Sort active (LIVE) fleets to the top
     const sortedBuses = useMemo(() => {
-        return [...buses].sort((a, b) => parseInt(a.busNumber) - parseInt(b.busNumber));
+        return [...buses].sort((a, b) => {
+            const isALive = isBusActive(a);
+            const isBLive = isBusActive(b);
+
+            if (isALive && !isBLive) return -1;
+            if (!isALive && isBLive) return 1;
+
+            // Secondary sort by bus number
+            return parseInt(a.busNumber) - parseInt(b.busNumber);
+        });
     }, [buses]);
 
     return (

@@ -15,8 +15,9 @@ export interface Bus {
   driverName: string;
   route: string;
   status: 'ACTIVE' | 'INACTIVE' | 'MAINTENANCE';
+  isOnline?: boolean;    // FIX 2: true only while driver is actively broadcasting
   lastLocation?: Location;
-  updatedAt?: number; // For "LIVE" status calculation
+  updatedAt?: number;
 }
 
 export interface DriverProfile {

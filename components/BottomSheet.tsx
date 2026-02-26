@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { Bus } from '../types';
 import { ViewMode } from './StudentTrackingPage';
+import maleDriverAvatar from '../driver_male.png';
 
 interface BottomSheetProps {
     bus: Bus;
@@ -73,8 +74,17 @@ const BottomSheet: React.FC<BottomSheetProps> = ({ bus, viewMode, setViewMode, e
                         <div className="flex flex-col">
                             <h3 className="text-xl font-black text-slate-900 tracking-tighter leading-none mb-2">Bus {bus.busNumber}</h3>
                             <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                                <span className="text-[10px] font-black text-green-600 uppercase tracking-[0.1em] leading-none">Live Now</span>
+                                {bus.isOnline ? (
+                                    <>
+                                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                        <span className="text-[10px] font-black text-green-600 uppercase tracking-[0.1em] leading-none">Live Now</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="w-2 h-2 bg-slate-400 rounded-full"></div>
+                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.1em] leading-none">Offline</span>
+                                    </>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -125,7 +135,7 @@ const BottomSheet: React.FC<BottomSheetProps> = ({ bus, viewMode, setViewMode, e
                             <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-4 ml-1">Assigned Driver</h4>
                             <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-[1.8rem] border border-slate-100">
                                 <div className="w-16 h-16 bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-200">
-                                    <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${bus.driverName || 'Felix'}`} alt="Driver" />
+                                    <img src={maleDriverAvatar} alt="Driver" className="w-full h-full object-cover" />
                                 </div>
                                 <div className="flex-1">
                                     <p className="text-lg font-black text-slate-900 leading-none mb-1.5">{bus.driverName || 'Sivabalan'}</p>

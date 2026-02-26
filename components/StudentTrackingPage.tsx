@@ -10,6 +10,7 @@ interface StudentTrackingPageProps {
     studentLocation: Location | null;
     onBack: () => void;
     eta: number | null;
+    isActive: boolean; // FIX 13: Strict gating prop
 }
 
 export type ViewMode = 'COLLAPSED' | 'MID' | 'EXPANDED';
@@ -18,18 +19,22 @@ const StudentTrackingPage: React.FC<StudentTrackingPageProps> = ({
     selectedBus,
     studentLocation,
     onBack,
-    eta
+    eta,
+    isActive
 }) => {
     const [viewMode, setViewMode] = useState<ViewMode>('MID');
     const [distanceText, setDistanceText] = useState<string>('--');
 
     // Calculate distance whenever locations change
     useEffect(() => {
-        if (studentLocation && selectedBus.lastLocation) {
+        if (isActive && studentLocation && selectedBus.lastLocation) {
             const distance = googleMapsService.calculateDistance(studentLocation, selectedBus.lastLocation);
-            setDistanceText(googleMapsService.formatDistance(distance));
+            setDistanceText(googleMapsService.formatDistance(distance || 0));
+        } else if (!isActive) {
+            // FIX 13: Reset distance text when bus is offline
+            setDistanceText('--');
         }
-    }, [studentLocation, selectedBus.lastLocation]);
+    }, [studentLocation, selectedBus.lastLocation, isActive]);
 
     // Handle back navigation
     const handleBack = () => {
@@ -56,9 +61,15 @@ const StudentTrackingPage: React.FC<StudentTrackingPageProps> = ({
             {/* Map Area - Full Screen for better experience */}
             <div className="absolute inset-0 z-0">
                 <MapComponent
-                    busLocation={selectedBus.lastLocation}
+                    busLocation={selectedBus.lastLocation ? {
+                        ...selectedBus.lastLocation,
+                        isOnline: selectedBus.isOnline,
+                        busNumber: selectedBus.busNumber,
+                        updatedAt: selectedBus.updatedAt
+                    } : undefined}
                     userLocation={studentLocation}
                     viewMode={viewMode}
+                    eta={eta}
                 />
             </div>
 

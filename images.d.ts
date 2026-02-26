@@ -1,4 +1,6 @@
-declare module "*.png";
-declare module "*.jpg";
-declare module "*.jpeg";
-declare module "*.svg";
+/// <reference types="vite/client" />
+
+declare module '*.png' { const src: string; export default src; }
+declare module '*.jpg' { const src: string; export default src; }
+declare module '*.jpeg' { const src: string; export default src; }
+declare module '*.svg' { const src: string; export default src; }
