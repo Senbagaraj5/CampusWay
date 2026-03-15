@@ -93,26 +93,32 @@ export const googleMapsService = {
   },
 
   /**
-   * Animate marker movement smoothly (Leaflet)
+   * FIX 2: Smooth Marker Animations
+   * Animate marker movement smoothly using a requestAnimationFrame easing loop
    */
   animateMarker: (
     marker: L.Marker,
     from: L.LatLng,
     to: L.LatLng,
-    duration: number = 1000
+    duration: number = 800 // default 800ms animation
   ) => {
-    const startTime = Date.now();
+    const startTime = performance.now();
     const startLat = from.lat;
     const startLng = from.lng;
     const endLat = to.lat;
     const endLng = to.lng;
 
-    const animate = () => {
-      const elapsed = Date.now() - startTime;
+    const animate = (currentTime: number) => {
+      const elapsed = currentTime - startTime;
       const progress = Math.min(elapsed / duration, 1);
 
-      const lat = startLat + (endLat - startLat) * progress;
-      const lng = startLng + (endLng - startLng) * progress;
+      // Ease in-out function from user payload
+      const ease = progress < 0.5
+        ? 2 * progress * progress
+        : -1 + (4 - 2 * progress) * progress;
+
+      const lat = startLat + (endLat - startLat) * ease;
+      const lng = startLng + (endLng - startLng) * ease;
 
       marker.setLatLng([lat, lng]);
 
@@ -121,7 +127,7 @@ export const googleMapsService = {
       }
     };
 
-    animate();
+    requestAnimationFrame(animate);
   },
 
   /**
@@ -170,11 +176,27 @@ export const googleMapsService = {
 
 
   /**
-   * Format distance for human-readable display
+   * Format distance for human-readable display.
+   * Returns '--' for invalid, zero, or sub-50m (likely GPS noise) values.
    */
-  formatDistance: (meters: number): string => {
+  formatDistance: (meters: number | null | undefined): string => {
+    if (!meters || meters <= 0) return '--';
+    if (isNaN(meters)) return '--';
+    if (meters < 50) return '--'; // too close, likely GPS noise
     if (meters < 1000) return `${Math.round(meters)} m`;
     return `${(meters / 1000).toFixed(1)} km`;
+  },
+
+  /**
+   * Format ETA for human-readable display.
+   * Returns '--' for invalid, zero, or unrealistic (>120min) values.
+   */
+  formatETA: (minutes: number | null | undefined): string => {
+    if (!minutes || minutes <= 0) return '--';
+    if (isNaN(minutes)) return '--';
+    if (minutes > 120) return '--'; // unrealistic
+    if (minutes < 1) return '< 1 min';
+    return `~${Math.ceil(minutes)} min`;
   },
 
   /**
@@ -210,10 +232,11 @@ export const googleMapsService = {
         if (onError) onError(error);
       },
       {
-        enableHighAccuracy: true, // Force GPS (not WiFi)
-        maximumAge: 0, // Always fresh data
-        timeout: 8000, // Wait up to 8 seconds for GPS fix
-      }
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 0,
+        distanceFilter: 5  // FIX 1: update only if moved > 5 meters
+      } as any // typecasting because distanceFilter is slightly non-standard typescript DOM depending on environment
     );
 
     console.log('📍 Watch ID:', watchId);

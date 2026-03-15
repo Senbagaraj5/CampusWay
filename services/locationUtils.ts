@@ -17,19 +17,34 @@ export const isValidLocation = (loc: Location | null | undefined): boolean => {
 
 /**
  * Determines if a bus is actively broadcasting fresh data.
- * Criteria: isOnline=true AND updatedAt is within 15 seconds AND coordinates are valid.
+ * Criteria: status === 'online' AND updatedAt is within 15 seconds AND coordinates are valid.
  */
 export const isBusActive = (bus: any): boolean => {
     if (!bus) return false;
 
     const now = Date.now();
-    const isOnline = bus.isOnline === true;
+    const isOnline = bus.status === 'online';
     const isRecent = bus.updatedAt ? (now - bus.updatedAt) < 15000 : false;
 
-    // Flexible check: use bus.lastLocation if it exists (Bus type), 
+    // Flexible check: use bus.location if it exists (Bus type), 
     // otherwise use bus directly (MapLocation type)
-    const locToValidate = bus.lastLocation || bus;
+    const locToValidate = bus.location || bus;
     const hasValidLoc = isValidLocation(locToValidate);
 
     return !!(isOnline && isRecent && hasValidLoc);
 };
+
+/**
+ * Calculates straight line distance between a bus and a student
+ */
+export function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI/180) * 
+    Math.cos(lat2 * Math.PI/180) *
+    Math.sin(dLng/2) * Math.sin(dLng/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}

@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# CampusWay specific
+campusway-server/
+server/
+.env
+*.env

@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "794379773462",
+    "firebase_url": "https://campusway-mzcet-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "campusway-mzcet",
+    "storage_bucket": "campusway-mzcet.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:794379773462:android:ead77c7137550261317737",
+        "android_client_info": {
+          "package_name": "com.campusway.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAFxoMCsC-mkrNNi_ACMQmVKEeY-j_p_vA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

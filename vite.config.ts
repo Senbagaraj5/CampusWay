@@ -8,6 +8,10 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3000,
       host: '0.0.0.0',
+      hmr: {
+        // Omitting host allows Vite to use window.location.hostname on the client device
+        clientPort: 3000
+      }
     },
     plugins: [react()],
     define: {
