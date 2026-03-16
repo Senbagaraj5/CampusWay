@@ -37,9 +37,9 @@ const StudentTrackingPage: React.FC<StudentTrackingPageProps> = ({
             setEtaDisplay('--');
             return;
         }
-
-        setDistanceText(googleMapsService.formatDistance(data.distance * 1000));
-        setEtaDisplay(googleMapsService.formatETA(data.duration));
+        const distanceMeters = data.distance * 1000;
+        setDistanceText(googleMapsService.formatDistance(distanceMeters));
+        setEtaDisplay(data.duration ? `~${data.duration} min` : '--');
     };
 
     useEffect(() => {
@@ -96,9 +96,12 @@ const StudentTrackingPage: React.FC<StudentTrackingPageProps> = ({
         if (!isDragging || startY.current === null) return;
         let targetY = ('touches' in e) ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
         currentY.current = targetY;
-        setDragOffset(targetY - startY.current);
+        const offset = targetY - startY.current;
+        // Limit drag: can't drag up past FULL, can't drag down past HIDDEN
+        if (viewMode === 'FULL' && offset < 0) return;
+        if (viewMode === 'HIDDEN' && offset > 0) return;
+        setDragOffset(Math.max(-100, Math.min(offset, 100)));
     };
-
     const handleTouchEnd = () => {
         if (!isDragging) return;
         setIsDragging(false);
@@ -168,13 +171,13 @@ const StudentTrackingPage: React.FC<StudentTrackingPageProps> = ({
                 <div className="bg-slate-900/90 backdrop-blur-md px-4 py-2.5 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex items-center gap-3 border border-white/10 pointer-events-none">
                     <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(129,140,248,0.8)]"></div>
                     <div className="flex flex-col">
-                        <span className="text-[10px] font-black text-white uppercase tracking-[0.12em] leading-none">Bus {selectedBus.busNumber}</span>
-                        <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Live Tracking</span>
+                        <span className="text-[10px] font-black text-white uppercase tracking-[0.12em] leading-none">Bus {selectedBus.busNumber} - {selectedBus.registrationNumber}</span>
+                        <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest mt-0.5">{selectedBus.route} Route</span>
                     </div>
                 </div>
             </div>
 
-            <div 
+            <div
                 style={getSheetStyle()}
                 onTouchStart={handleTouchStart}
                 onTouchMove={handleTouchMove}
@@ -213,7 +216,7 @@ const StudentTrackingPage: React.FC<StudentTrackingPageProps> = ({
                     </div>
                 </div>
 
-                {viewMode !== 'COLLAPSED' && viewMode !== 'HIDDEN' && (
+                {viewMode !== 'HIDDEN' && (
                     <div className="grid grid-cols-2 gap-3 mt-2 px-2 animate-in fade-in duration-300">
                         <div className="bg-slate-50 p-4 rounded-[1.25rem] border border-slate-100 flex flex-col justify-center">
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Distance</p>

@@ -1,5 +1,6 @@
 // src/services/api.js
-const API = 'http://localhost:4000';
+const API = 'https://campusway-server-production.up.railway.app';
+
 
 // Driver Check-in with location
 export const checkinDriver = async (driverName, busNumber, location) => {
@@ -52,32 +53,39 @@ export const studentLogin = async (rollNumber) => {
 // Start trip
 export const startTrip = async (busNumber, driverName) => {
   try {
-    const res = await fetch(`${API}/api/trips/start`, {
+    const response = await fetch(`${API}/api/trips/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ busNumber, driverName })
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        busNumber,
+        driverName,
+      }),
     });
-    return res.json();
-  } catch (err) {
-    console.error('Start trip error:', err);
-    return { ok: false, error: err.message };
+    const data = await response.json();
+    return { ok: response.ok, tripId: data.tripId, ...data };
+  } catch (error) {
+    console.error('API startTrip error:', error);
+    return { ok: false, error };
   }
 };
 
 // End trip
 export const endTrip = async (tripId) => {
   try {
-    const res = await fetch(`${API}/api/trips/${tripId}/end`, {
+    const response = await fetch(`${API}/api/trips/${tripId}/end`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' }
+      headers: {
+        'Content-Type': 'application/json',
+      },
     });
-    return res.json();
-  } catch (err) {
-    console.error('End trip error:', err);
-    return { ok: false, error: err.message };
+    return await response.json();
+  } catch (error) {
+    console.error('API endTrip error:', error);
+    return { ok: false, error };
   }
 };
-
 // Get trip history
 export const getTripHistory = async (busNumber) => {
   try {

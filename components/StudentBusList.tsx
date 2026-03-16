@@ -83,7 +83,7 @@ export const StudentBusCard = React.memo(({
 
             <div className="mt-6 w-full relative z-10 flex flex-col overflow-hidden">
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest leading-none mb-1.5 whitespace-nowrap overflow-hidden text-ellipsis">Bus Route</p>
-                <h3 className="text-sm font-bold text-slate-900 leading-tight whitespace-nowrap overflow-hidden text-ellipsis w-full">Bus {bus.busNumber}</h3>
+                <h3 className="text-sm font-bold text-slate-900 leading-tight whitespace-nowrap overflow-hidden text-ellipsis w-full">Bus {bus.busNumber} • {bus.registrationNumber}</h3>
                 <p className="text-[11px] font-normal text-slate-500 mt-1 whitespace-nowrap overflow-hidden text-ellipsis w-full">
                     {bus.route}
                 </p>

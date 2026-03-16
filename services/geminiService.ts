@@ -34,8 +34,10 @@ export const getSmartETA = async (currentLocation: { lat: number, lng: number },
     });
     const data = JSON.parse(response.text);
     return data.etaMinutes || 15;
-  } catch (error) {
-    console.error("AI Error:", error);
+  } catch (error: any) {
+    if (!error?.message?.includes('API key not valid')) {
+        console.error("AI Error:", error);
+    }
     return 15;
   }
 };

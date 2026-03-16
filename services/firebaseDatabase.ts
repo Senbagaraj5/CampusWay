@@ -2,11 +2,12 @@ import { database } from './firebaseConfig';
 import { ref, get, set, push, update, onValue, off, onDisconnect, goOnline, goOffline } from 'firebase/database';
 import { Bus, Location, AttendanceRecord, DriverProfile } from '../types';
 
-const BUS_IDS = ['24', '23', '18', '7', '40', '5', '32', '17', '6', '16', '31', '49', '15', '2', '4', '42', '41', '3'];
+const BUS_IDS = ['2', '3', '4', '6', '7', '8', '9', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '34', '50'];
 
 const DEFAULT_BUSES: Bus[] = BUS_IDS.map(id => ({
-    id,
+    id: `bus_${id}`,
     busNumber: id,
+    registrationNumber: '',
     driverName: `Driver ${id}`,
     route: `Campus Route ${id}`,
     status: 'offline',
@@ -88,7 +89,8 @@ export const firebaseDatabase = {
                     const number = key.includes('_') ? key.split("_")[1] : key;
                     return {
                         id: key,
-                        busNumber: number,
+                        busNumber: val.busNumber || number,
+                        registrationNumber: val.registrationNumber || '',
                         driverName: val.driverName || val.name || `Driver ${number}`,
                         route: val.route || `Campus Route ${number}`,
                         status: val.status || 'offline',
@@ -180,7 +182,8 @@ export const firebaseDatabase = {
                     const number = key.includes('_') ? key.split("_")[1] : key;
                     return {
                         id: key,
-                        busNumber: number,
+                        busNumber: val.busNumber || number,
+                        registrationNumber: val.registrationNumber || '',
                         driverName: val.driverName || val.name || `Driver ${number}`,
                         route: val.route || `Campus Route ${number}`,
                         status: val.status || 'offline',

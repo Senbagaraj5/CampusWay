@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { database } from '../services/firebaseConfig';
+import { saveLocationHistory } from '../services/api';
 import { ref, onValue, off } from 'firebase/database';
 import { Location } from '../types';
 
@@ -12,7 +13,7 @@ interface MapComponentProps {
   onRouteUpdate?: (data: { distance: number | null; duration: number | null }) => void;
 }
 
-// FIX 5 — ICONS & PULSE ANIMATION
+// ICONS & PULSE ANIMATION
 const studentIcon = L.divIcon({
   className: '',
   html: `
@@ -80,189 +81,145 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<L.Map | null>(null);
-  
+
   const busMarkerRef = useRef<L.Marker | null>(null);
   const studentMarkerRef = useRef<L.Marker | null>(null);
   const routePolylineRef = useRef<L.Polyline | null>(null);
   const studentLatRef = useRef<number | null>(null);
   const studentLngRef = useRef<number | null>(null);
+  const busLatRef = useRef<number | null>(null);
+  const busLngRef = useRef<number | null>(null);
+  
   const mapInitialized = useRef(false);
   const osrmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastUpdateRef = useRef<number>(0);
 
-  // FIX 4 — MAP INIT TIMING FIX
+  // MAP INITIALIZATION
   useEffect(() => {
-    // Wait for DOM to render (modal animation)
     const initTimer = setTimeout(() => {
       if (mapRef.current || !mapContainerRef.current) return;
-      
+
       console.log("Map initializing...");
-      
+
       mapRef.current = L.map(mapContainerRef.current, {
         zoomControl: false,
         attributionControl: false,
         preferCanvas: true,
         tap: false
       });
-      
+
       L.tileLayer(
         'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
         { maxZoom: 19, keepBuffer: 4 }
       ).addTo(mapRef.current);
-      
-      console.log("Map initialized ✅");
+
       setMap(mapRef.current);
-      
     }, 300);
-    
+
     return () => {
       clearTimeout(initTimer);
       if (mapRef.current) {
-        console.log("Cleaning up map...");
         mapRef.current.remove();
         mapRef.current = null;
       }
     };
   }, []);
 
-  // FIX 2 — STUDENT LOCATION TRACKING
+  // STUDENT LOCATION TRACKING
   useEffect(() => {
     if (!map) return;
-    
-    console.log("Getting student location...");
-    
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        
-        console.log("Student initial location acquired:", lat, lng);
-        
-        studentLatRef.current = lat;
-        studentLngRef.current = lng;
-        
-        if (!studentMarkerRef.current) {
-          studentMarkerRef.current = L.marker(
-            [lat, lng],
-            { icon: studentIcon, zIndexOffset: 900 }
-          ).addTo(map);
-          
-          // Initial view
-          map.setView([lat, lng], 15);
-          console.log("Student marker created ✅");
-        }
-      },
-      (error) => {
-        console.error("Student GPS error:", error.code, error.message);
-        if (error.code === 1) {
-          alert("Please allow location permission for better experience!");
-        } else if (error.code === 3) {
-          console.log("Retrying student initial location with lower accuracy...");
-          navigator.geolocation.getCurrentPosition(
-            (position) => {
-               const { latitude: lat, longitude: lng } = position.coords;
-               studentLatRef.current = lat;
-               studentLngRef.current = lng;
-               if (!studentMarkerRef.current) {
-                 studentMarkerRef.current = L.marker([lat, lng], { icon: studentIcon, zIndexOffset: 900 }).addTo(map);
-                 map.setView([lat, lng], 15);
-               }
-            },
-            null,
-            { enableHighAccuracy: false, timeout: 30000, maximumAge: 10000 }
-          );
-        }
-      },
-      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
-    );
-    
+
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        
         studentLatRef.current = lat;
         studentLngRef.current = lng;
-        
-        if (studentMarkerRef.current) {
+
+        if (!studentMarkerRef.current) {
+          studentMarkerRef.current = L.marker([lat, lng], { icon: studentIcon, zIndexOffset: 900 }).addTo(map);
+          if (!mapInitialized.current) {
+            map.setView([lat, lng], 15);
+          }
+        } else {
           studentMarkerRef.current.setLatLng([lat, lng]);
+        }
+        
+        // Trigger route update if bus is known
+        if (busLatRef.current && busLngRef.current) {
+          updateRoadRoute(busLatRef.current, busLngRef.current);
         }
       },
       (error) => {
-        console.error("Student watch watchPosition Error:", error.code, error.message);
+        console.error("Student GPS error:", error);
         if (error.code === 3) {
-          console.log("Retrying watchPosition with lower accuracy...");
-          navigator.geolocation.getCurrentPosition(
-            (position) => {
-              const { latitude: lat, longitude: lng } = position.coords;
-              studentLatRef.current = lat;
-              studentLngRef.current = lng;
-              if (studentMarkerRef.current) studentMarkerRef.current.setLatLng([lat, lng]);
-            },
-            null,
-            { enableHighAccuracy: false, timeout: 30000, maximumAge: 10000 }
-          );
+            console.warn("📍 GPS Timeout: Check if Location is enabled on your device.");
         }
       },
-      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
-    
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-    };
+
+    return () => navigator.geolocation.clearWatch(watchId);
   }, [map]);
 
-  // FIX 1 — BUS LOCATION TRACKING (FIREBASE)
+  // BUS LOCATION TRACKING (FIREBASE)
   useEffect(() => {
     if (!map || !busId) return;
 
-    console.log("Subscribing to bus location for:", busId);
     const busLocRef = ref(database, `buses/${busId}/location`);
-    
     const unsubscribe = onValue(busLocRef, (snapshot) => {
       const data = snapshot.val();
-      console.log("Bus location data received:", data);
-      
-      if (!data || !data.lat || !data.lng || (data.lat === 0 && data.lng === 0)) {
-        console.log("Invalid bus location data, skipping marker update.");
-        return;
-      }
-      
+      if (!data || !data.lat || !data.lng || (data.lat === 0 && data.lng === 0)) return;
+
       const busLat = parseFloat(data.lat);
       const busLng = parseFloat(data.lng);
-      
+      busLatRef.current = busLat;
+      busLngRef.current = busLng;
+
       if (!busMarkerRef.current) {
-        busMarkerRef.current = L.marker(
-          [busLat, busLng],
-          { icon: busIcon(busNumber || '??'), zIndexOffset: 1000 }
-        ).addTo(map);
-        console.log("Bus marker created ✅");
+        busMarkerRef.current = L.marker([busLat, busLng], { icon: busIcon(busNumber || '??'), zIndexOffset: 1000 }).addTo(map);
       } else {
         busMarkerRef.current.setLatLng([busLat, busLng]);
-        console.log("Bus marker position updated ✅");
       }
-      
-      // Update road route
+
       updateRoadRoute(busLat, busLng);
       
-      // Fit bounds first time
-      if (!mapInitialized.current && studentLatRef.current && studentLngRef.current) {
-        map.fitBounds([
+      // Auto-fit bounds logic
+      if (studentLatRef.current && studentLngRef.current) {
+        const bounds = L.latLngBounds(
           [studentLatRef.current, studentLngRef.current],
           [busLat, busLng]
-        ], { padding: [80, 80], maxZoom: 16 });
-        mapInitialized.current = true;
+        );
+        
+        // If first update or significantly moved, fit bounds
+        if (!mapInitialized.current) {
+          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+          mapInitialized.current = true;
+        } else if (viewMode === 'HALF' || viewMode === 'FULL') {
+             // Only auto-fit if user isn't actively panning/zooming away
+             // Or we can just fit bounds more subtly
+        }
       }
     });
 
-    return () => {
-      console.log("Unsubscribing from bus location");
-      off(busLocRef);
-    };
+    return () => off(busLocRef);
   }, [map, busId, busNumber]);
 
-  // Road Route Logic (OSRM)
+  // EFFECT: Update marker icon if busNumber changes after initialization
+  useEffect(() => {
+    if (busMarkerRef.current && busNumber) {
+      busMarkerRef.current.setIcon(busIcon(busNumber));
+    }
+  }, [busNumber]);
+
+  // Road Route Logic (OSRM) - Road Following Fix
   const updateRoadRoute = (busLat: number, busLng: number) => {
     if (!map || studentLatRef.current === null || studentLngRef.current === null) return;
+    
+    const now = Date.now();
+    // Throttle OSRM calls to every 5 seconds to prevent rate limits
+    if (now - lastUpdateRef.current < 5000) return;
+    lastUpdateRef.current = now;
 
     if (osrmTimerRef.current) clearTimeout(osrmTimerRef.current);
 
@@ -270,42 +227,62 @@ const MapComponent: React.FC<MapComponentProps> = ({
       try {
         const studentLat = studentLatRef.current!;
         const studentLng = studentLngRef.current!;
+        
+        // Added overview=full for detailed road following
         const url = `https://router.project-osrm.org/route/v1/driving/${studentLng},${studentLat};${busLng},${busLat}?overview=full&geometries=geojson`;
         const response = await fetch(url);
         const data = await response.json();
 
-        if (data.routes?.[0]?.geometry?.coordinates) {
+        if (data.routes?.[0]) {
           const route = data.routes[0];
-          const distanceKm = route.distance / 1000;
-          const durationMin = Math.ceil(route.duration / 60);
-
-          const coords: [number, number][] = route.geometry.coordinates.map(
-            (c: any) => [c[1], c[0]] as [number, number]
-          );
-
+          const coords: [number, number][] = route.geometry.coordinates.map((c: any) => [c[1], c[0]]);
+          
           if (routePolylineRef.current) {
             routePolylineRef.current.setLatLngs(coords);
           } else {
             routePolylineRef.current = L.polyline(coords, {
-              color: '#4F46E5',
-              weight: 5,
-              opacity: 0.8,
+              color: '#6366F1',
+              weight: 6,
+              opacity: 0.9,
               lineJoin: 'round',
-              lineCap: 'round'
+              lineCap: 'round',
+              dashArray: '1, 10' // Subtle dashed path for road following
             }).addTo(map);
           }
-          
+
           if (onRouteUpdate) {
-            onRouteUpdate({ distance: distanceKm, duration: durationMin });
+            onRouteUpdate({ 
+              distance: route.distance / 1000, 
+              duration: Math.ceil(route.duration / 60) 
+            });
           }
+          
+          // Auto-fit every time the route is recalculated
+          if (map) {
+            map.fitBounds(routePolylineRef.current.getBounds(), {
+              padding: [60, 60],
+              maxZoom: 16,
+              animate: true
+            });
+          }
+
+          // Persistence: Save to backend
+          saveLocationHistory({
+            busId: busId || 'unknown',
+            busLat,
+            busLng,
+            studentLat,
+            studentLng,
+            distanceKm: route.distance / 1000,
+            durationMin: Math.ceil(route.duration / 60)
+          }).catch(() => {});
         }
       } catch (e) {
-        console.error('OSRM fetch failed', e);
+        console.error('OSRM route failed:', e);
       }
-    }, 2000);
+    }, 500);
   };
 
-  // Invalidate size when viewMode changes
   useEffect(() => {
     if (map) {
       setTimeout(() => map.invalidateSize(), 300);
@@ -313,10 +290,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [map, viewMode]);
 
   return (
-    <div 
-      id="map" 
-      ref={mapContainerRef} 
-      className="absolute inset-0 bg-slate-100" 
+    <div
+      ref={mapContainerRef}
+      className="absolute inset-0 bg-slate-100"
       style={{ zIndex: 0 }}
     />
   );

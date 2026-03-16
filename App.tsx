@@ -3,7 +3,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { UserRole, Bus, Location, AttendanceRecord } from './types';
 import { firebaseDatabase } from './services/firebaseDatabase';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Geolocation } from '@capacitor/geolocation';
 import { googleMapsService } from './services/googleMapsService';
 import { getSmartETA, getRouteAssistant, getTrafficAnalysis } from './services/geminiService';
 import MapComponent from './components/MapComponent';
@@ -16,7 +17,11 @@ import collegeLogo from './college_logo.png';
 import { isBusActive } from './services/locationUtils';
 import { requestBatteryOptimization, showBrandSpecificInstructions } from './components/BackgroundOptimizationPrompts';
 import { checkinDriver, startTrip, endTrip } from './services/api';
+import DriverLogin from './components/DriverLogin';
 
+
+// Register Native Plugins
+const BackgroundGPS = registerPlugin<any>('BackgroundGPS');
 
 
 const App: React.FC = () => {
@@ -66,6 +71,12 @@ const App: React.FC = () => {
   const [showInstallBanner, setShowInstallBanner] = useState(false);
   const deferredPromptRef = useRef<any>(null);
 
+  // Background GPS states
+  const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'limited'>('prompt');
+  const [gpsEnabled, setGpsEnabled] = useState(true);
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  const [speed, setSpeed] = useState<number | null>(null);
+
   useEffect(() => {
     // Initial fetch
     firebaseDatabase.getBuses().then(setBuses);
@@ -113,6 +124,40 @@ const App: React.FC = () => {
 
     return () => clearInterval(interval);
   }, [loginTimestamp, role]);
+
+  // Polling for location permissions and GPS status
+  useEffect(() => {
+    if (role !== 'DRIVER') return;
+
+    const checkStatus = async () => {
+      if (!Capacitor.isNativePlatform()) return;
+
+      try {
+        const perm = await Geolocation.checkPermissions();
+        setLocationPermission(perm.location);
+
+        // Check if GPS is actually on (try to get a quick position)
+        try {
+          await Geolocation.getCurrentPosition({
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+          });
+          setGpsEnabled(true);
+        } catch (e: any) {
+          if (e.code === 3 || e.message?.toLowerCase().includes('location') || e.message?.toLowerCase().includes('gps')) {
+            setGpsEnabled(false);
+          }
+        }
+      } catch (err) {
+        console.error('Error checking permissions:', err);
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 3000);
+    return () => clearInterval(interval);
+  }, [role]);
 
   const handleLogout = useCallback(async () => {
     if (role === 'DRIVER' && selectedBus) {
@@ -462,7 +507,7 @@ const App: React.FC = () => {
         (err) => {
           console.error('🚌 Driver location error:', err);
         },
-        { enableHighAccuracy: true, maximumAge: 1000, timeout: 3000 }
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
       );
 
       // Periodically check traffic
@@ -535,127 +580,65 @@ const App: React.FC = () => {
       return;
     }
 
-    console.log('🚀 Starting broadcast directly for bus:', bus.busNumber);
-
-    // FIX 17: Immediate UI switch and Firebase status update
-    setIsTracking(true);
-    firebaseDatabase.setDriverOnline(bus.id, true);
-    firebaseDatabase.setupOnDisconnect(bus.id);
-
-    // PWA Background GPS Strategy
-    try {
-      if (navigator.storage && navigator.storage.persist) {
-        await navigator.storage.persist();
-      }
-    } catch (e) {
-      console.log('Storage persist not supported or denied', e);
-    }
-
-    try {
-      if ('wakeLock' in navigator) {
-        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-      }
-    } catch (e) {
-      console.log('Wake lock not supported or denied', e);
-    }
-
-    if ('Notification' in window) {
-      Notification.requestPermission().then(permission => {
-        if (permission === 'granted') {
-          new Notification('CampusWay GPS Active', {
-            body: 'Your location is being shared. Keep this tab open.',
-            icon: '/icon-192.png',
-            requireInteraction: true 
+    // REQUEST WAKE LOCK (Web)
+    if ('screen' in navigator && (navigator as any).wakeLock) {
+      try {
+        if (!wakeLockRef.current) {
+          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+          console.log("✅ Wake Lock Active");
+          
+          wakeLockRef.current.addEventListener('release', () => {
+            console.log("ℹ️ Wake Lock Released");
+            wakeLockRef.current = null;
           });
         }
-      });
+      } catch (err) {
+        console.error('❌ WakeLock Error:', err);
+      }
     }
 
-    const updateLocation = (pos: GeolocationPosition) => {
-      const loc: Location = {
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        timestamp: pos.timestamp || Date.now(),
-        accuracy: pos.coords.accuracy || 50,
-        speed: pos.coords.speed ?? 0,
-      };
-
-      console.log('📍 Driver location update:', loc);
-
-      const record: AttendanceRecord = {
-        id: Math.random().toString(36).substr(2, 9),
-        driverId: currentDriver?.uid || 'unknown', 
-        busId: bus.id,
-        timestamp: new Date().toISOString(),
-        location: loc,
-        photoUrl: ''
-      };
-
-      firebaseDatabase.saveAttendance(record);
-
-      setCurrentLocation(loc);
-      prevDriverLocRef.current = { loc, ts: loc.timestamp };
-      firebaseDatabase.updateBusLocation(bus.id, loc);
-
-      // Save to SQL Server too
-      checkinDriver(bus.driverName || 'Driver', bus.busNumber, {
-        lat: loc.lat,
-        lng: loc.lng,
-        accuracy: loc.accuracy || 0
-      });
-    };
+    console.log('🚀 Starting Persistent Native GPS for bus:', bus.busNumber);
 
     try {
       if (Capacitor.isNativePlatform()) {
-        const { registerPlugin } = await import('@capacitor/core');
-        const BackgroundGPS = registerPlugin<any>('BackgroundGPS');
-        await BackgroundGPS.startService({ busId: bus.id });
-        console.log('✅ Native Background GPS service requested');
-      }
-    } catch (e) {
-      console.error('❌ Native Background GPS failed to start:', e);
-    }
-
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      updateLocation,
-      (error) => {
-        console.error("watchPosition error:", error);
-        if (error.code === 3) {
-          console.log("Retrying driver watch with lower accuracy...");
-          navigator.geolocation.getCurrentPosition(
-            updateLocation,
-            (e) => console.error("Retry failed:", e),
-            { enableHighAccuracy: false, timeout: 30000, maximumAge: 10000 }
-          );
+        // 1. Check & Request Location Permissions
+        const permStatus = await BackgroundGPS.checkPermissions();
+        if (permStatus.location !== 'granted') {
+           const request = await BackgroundGPS.requestPermissions();
+           if (request.location !== 'granted') {
+             setLoginError('Background Location permission is mandatory');
+             return;
+           }
         }
-      },
-      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
-    );
 
-    heartbeatRef.current = setInterval(() => {
-      if (!isTracking) {
-         if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-         return;
+        // 2. Check if GPS is enabled
+        const gpsStatus = await BackgroundGPS.isGPSEnabled();
+        if (!gpsStatus.enabled) {
+          alert('Please turn on GPS/Location in your system settings');
+          await BackgroundGPS.openLocationSettings();
+          return;
+        }
+
+        // 3. Request Battery Optimization (Unrestricted)
+        await BackgroundGPS.requestBatteryOptimization();
+
+        // 4. Show Brand-Specific Guide if first time
+        await showBrandSpecificInstructions();
+
+        // 5. Start the Native Foreground Service
+        await BackgroundGPS.startService({ busId: bus.id });
+        console.log('✅ Native Background GPS service STARTED');
       }
-      navigator.geolocation.getCurrentPosition(
-        updateLocation, 
-        (err) => {
-          if (err?.code === 3) {
-            navigator.geolocation.getCurrentPosition(updateLocation, null, { enableHighAccuracy: false, timeout: 30000, maximumAge: 10000 });
-          }
-        }, 
-        { enableHighAccuracy: true, timeout: 30000, maximumAge: 5000 }
-      );
-    }, 15000);
-
-    // PART 3 — CALL ON DRIVER LOGIN:
-    // Request battery optimization
-    await requestBatteryOptimization();
-    
-    // Show brand-specific instructions after a short delay
-    setTimeout(() => {
-      showBrandSpecificInstructions();
-    }, 2000);
+      
+      // Update UI state and Firebase status
+      setIsTracking(true);
+      firebaseDatabase.setDriverOnline(bus.id, true);
+      firebaseDatabase.setupOnDisconnect(bus.id);
+      
+    } catch (e) {
+      console.error('❌ Failed to start Native GPS:', e);
+      setToastMessage('Failed to start GPS service');
+    }
   };
 
 
@@ -665,10 +648,7 @@ const App: React.FC = () => {
       
       // Stop native background service if on Android
       if (Capacitor.isNativePlatform()) {
-        import('@capacitor/core').then(({ registerPlugin }) => {
-          const BackgroundGPS = registerPlugin<any>('BackgroundGPS');
-          BackgroundGPS.stopService();
-        }).catch(err => console.error('Failed to stop Background GPS service', err));
+        BackgroundGPS.stopService().catch((err: any) => console.error('Failed to stop Background GPS service', err));
       }
     }
     if (watchIdRef.current !== null) {
@@ -806,6 +786,7 @@ const App: React.FC = () => {
            console.log("→ Start GPS sharing");
            setLoginTimestamp(Date.now());
            setRole('DRIVER');
+           setSelectedBus(selectedLoginBus); // Fix bus number display
            setShowDriverLogin(false);
            handleStartBroadcasting(selectedLoginBus);
 
@@ -887,7 +868,7 @@ const App: React.FC = () => {
       // Now grab the bus definition directly from state or the parent bus reference
       const bus = buses.find(b => b.id === currentDriver.busId);
       if (bus) {
-        setSelectedBus(bus);
+        setSelectedBus(bus); // Ensure bus is set after password update
         handleStartBroadcasting(bus);
 
         // SQL Trip Start after password update
@@ -1015,150 +996,34 @@ const App: React.FC = () => {
             </>
 
           ) : (
-            <div className="space-y-6 w-full animate-in fade-in zoom-in-95 duration-300">
-              <div className="text-center">
-                <div className="mb-6 flex justify-center">
-                  <div
-                    className="h-20 w-20 flex items-center justify-center cursor-pointer active:scale-90 transition-all"
-                    onClick={() => setShowDriverLogin(false)}
-                  >
-                    <img src={collegeLogo} alt="Logo" className="w-full h-full object-contain" />
-                  </div>
-                </div>
-                <h2 className="text-2xl font-bold text-slate-900 tracking-tighter">Driver Authentication</h2>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Driver Login</p>
-              </div>
+             <DriverLogin 
+               onDriverLogin={(session) => {
+                 setLoginTimestamp(Date.now());
+                 setRole('DRIVER');
+                 // Create a partial Bus object for compatibility
+                 const selectedBusObj: any = {
+                    id: `bus_${session.busNo}`,
+                    busNumber: session.busNo.toString(),
+                    registrationNumber: session.registration,
+                    route: session.route,
+                    status: 'online'
+                 };
+                 setSelectedBus(selectedBusObj);
+                 setShowDriverLogin(false);
+                 handleStartBroadcasting(selectedBusObj);
 
-              <div className="w-full">
-                
-                {!selectedLoginBus ? (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pb-4 px-4">
-                       {buses.slice().sort((a,b) => parseInt(a.busNumber) - parseInt(b.busNumber)).map(bus => (
-                          <div key={bus.id} className="w-full h-full flex">
-                             <StudentBusCard
-                                 bus={bus}
-                                 isSelected={false}
-                                 isDriverView={true}
-                                 onClick={() => {
-                                    setSelectedLoginBus(bus);
-                                    setLoginError('');
-                                    // Smooth scroll down mechanism to reveal password naturally
-                                    setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 100);
-                                 }}
-                             />
-                          </div>
-                       ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-                    <div className="grid grid-cols-2 gap-3 pb-2">
-                         {/* Display Selected Bus Card only */}
-                         <div className="w-full h-full flex col-span-2">
-                             <StudentBusCard
-                                 bus={selectedLoginBus}
-                                 isSelected={true}
-                                 isDriverView={true}
-                                 onClick={() => {}}
-                             />
-                         </div>
-                    </div>
-
-                    <div className="relative pt-2 space-y-4">
-                      <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center mb-3">Password</p>
-                      
-                      <div className="relative">
-                        <input
-                          type={showPassword ? 'text' : 'password'}
-                          value={password}
-                          onChange={(e) => {
-                            const val = e.target.value.replace(/\D/g, '');
-                            if (val.length <= 6) {
-                              setPassword(val);
-                              setLoginError('');
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && password.length === 6) {
-                                handleDriverLogin();
-                            }
-                          }}
-                          inputMode="numeric"
-                          maxLength={6}
-                          placeholder="Password"
-                          className="w-full bg-white border-2 border-slate-200 focus:border-indigo-600 rounded-xl px-4 py-4 text-lg font-black tracking-[0.3em] outline-none transition-all pr-12"
-                        />
-                        <button
-                          onClick={() => setShowPassword(!showPassword)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 p-2 transition-colors active:scale-90"
-                        >
-                          {showPassword ? <EyeOff size={22} /> : <Eye size={22} />}
-                        </button>
-                      </div>
-
-                    </div>
-                  </div>
-                )}
-
-                {loginError && (
-                  <div className="bg-red-50 border border-red-100 rounded-2xl p-3 animate-in fade-in slide-in-from-top-2">
-                    <p className="text-[10px] font-black text-red-600 flex items-center gap-2 uppercase tracking-wide">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      {loginError}
-                    </p>
-                  </div>
-                )}
-
-                {selectedLoginBus && (
-                  <div className="pt-2 space-y-2 px-4">
-                    <button
-                      onClick={handleDriverLogin}
-                      className="w-full py-[14px] bg-indigo-600 text-white rounded-xl font-semibold text-[15px] shadow-sm hover:bg-indigo-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-                    >
-                      <span>Login</span>
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        // FIX 6: Clear persistence on cancel
-                        localStorage.removeItem("driverUid");
-                        localStorage.removeItem("driverBusId");
-                        if (selectedLoginBus) {
-                           // go back to bus list
-                           setSelectedLoginBus(null);
-                           setPassword('');
-                           setLoginError('');
-                        } else {
-                           // close login portal entirely
-                           setShowDriverLogin(false);
-                           setLoginError('');
-                        }
-                      }}
-                      className="w-full py-4 text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
-                    >
-                      {selectedLoginBus ? 'Back to Bus List' : 'Cancel & Return'}
-                    </button>
-                  </div>
-                )}
-                {!selectedLoginBus && (
-                   <div className="pt-2 border-t border-slate-50">
-                      <button
-                        onClick={() => {
-                           setShowDriverLogin(false);
-                           setLoginError('');
-                        }}
-                        className="w-full py-4 text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-slate-600 transition-colors"
-                      >
-                        Cancel & Return
-                      </button>
-                   </div>
-                )}
-              </div>
-
-
-            </div>
+                 // SQL Trip Start
+                 startTrip(session.busNo.toString(), 'Driver').then(tripResult => {
+                   if (tripResult.success) {
+                     localStorage.setItem('currentTripId', tripResult.tripId);
+                   }
+                 });
+               }}
+               onCancel={() => {
+                 setShowDriverLogin(false);
+                 setLoginError('');
+               }}
+             />
           )}
 
           {/* Forced Password Change Modal */}
@@ -1299,6 +1164,46 @@ const App: React.FC = () => {
       <main className="flex-grow overflow-y-auto p-4">
         {role === 'DRIVER' ? (
           <div className="max-w-[420px] mx-auto w-full space-y-6 lg:max-w-6xl animate-in fade-in duration-500">
+            {Capacitor.isNativePlatform() && (locationPermission !== 'granted' || !gpsEnabled) ? (
+              <div className="fixed inset-0 bg-white z-[9999] flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-300">
+                <div className="w-24 h-24 bg-red-50 text-red-500 rounded-3xl flex items-center justify-center mb-6">
+                  <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                </div>
+                <h2 className="text-2xl font-black text-slate-900 tracking-tighter mb-2">
+                  {locationPermission !== 'granted' ? 'Location Permission Required' : 'Please turn on Location/GPS'}
+                </h2>
+                <p className="text-slate-500 font-medium leading-relaxed mb-8 max-w-xs">
+                  {locationPermission !== 'granted' 
+                    ? 'CampusWay needs "Allow all the time" access to share your bus position with students even when the app is minimized.'
+                    : 'Your GPS appears to be off. Go to Settings > Location and turn it on.'}
+                </p>
+                
+                <div className="w-full space-y-3">
+                  {locationPermission !== 'granted' ? (
+                    <>
+                      <button
+                        onClick={async () => {
+                          const perm = await Geolocation.requestPermissions();
+                          setLocationPermission(perm.location);
+                        }}
+                        className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all uppercase tracking-wider"
+                      >
+                        Grant Permission
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    onClick={async () => {
+                        window.alert("Please go to device settings to enable location permissions manually.");
+                    }}
+                    className="w-full py-4 bg-slate-100 text-slate-600 rounded-2xl font-black text-sm active:scale-95 transition-all uppercase tracking-wider"
+                  >
+                    Check Settings
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {!isTracking ? (
               // FIX: When not tracking, we shouldn't even be in the 'DRIVER' view 
               // unless we are in the driverPortal (controlled by showDriverLogin).
@@ -1314,18 +1219,39 @@ const App: React.FC = () => {
                   
                   <div className="text-5xl mb-4">🚌</div>
                   <h2 className="text-3xl font-bold text-slate-900 tracking-tighter mb-1">Bus {selectedBus?.busNumber}</h2>
-                  <p className="text-slate-500 font-medium text-sm mb-6">{selectedBus?.route}</p>
+                  <p className="text-slate-700 font-black text-xs uppercase tracking-widest mb-1">{selectedBus?.registrationNumber}</p>
+                  <p className="text-slate-500 font-medium text-sm mb-6">{selectedBus?.route} Route</p>
                   
-                  <div className="flex items-center gap-2 px-4 py-2 bg-green-50 rounded-full border border-green-200 mb-8">
+                  <div className="flex items-center gap-2 px-4 py-2 bg-green-50 rounded-full border border-green-200 mb-6">
                     <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></div>
-                    <span className="text-green-700 font-bold text-sm tracking-wide">Sharing Location</span>
+                    <span className="text-green-700 font-bold text-sm tracking-wide">Sharing Live</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 w-full mb-6">
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Accuracy</p>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <div className={`w-2.5 h-2.5 rounded-full ${!selectedBus?.location?.accuracy || selectedBus.location.accuracy < 15 ? 'bg-emerald-500' : selectedBus.location.accuracy < 50 ? 'bg-amber-500' : 'bg-red-500'}`}></div>
+                        <p className={`font-black text-sm ${!selectedBus?.location?.accuracy || selectedBus.location.accuracy < 15 ? 'text-emerald-600' : selectedBus.location.accuracy < 50 ? 'text-amber-600' : 'text-red-600'}`}>
+                          {!selectedBus?.location?.accuracy || selectedBus.location.accuracy < 15 ? 'Excellent' : selectedBus.location.accuracy < 50 ? 'Good' : 'Poor'}
+                        </p>
+                      </div>
+                      <p className="text-[9px] text-slate-400 font-bold mt-1">{selectedBus?.location?.accuracy ? `${Math.round(selectedBus.location.accuracy)}m` : '--'}</p>
+                    </div>
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Speed</p>
+                      <p className="font-black text-xl text-slate-900">{Math.round(selectedBus?.location?.speed || 0)} <span className="text-[10px] font-bold text-slate-400">km/h</span></p>
+                      <p className="text-[8px] text-slate-400 font-medium mt-1 truncate">
+                        {currentLocation ? `${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}` : 'Wait for fix...'}
+                      </p>
+                    </div>
                   </div>
                   
-                  <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl text-amber-800 text-sm font-medium w-full mb-8">
-                    <p className="flex items-center justify-center gap-2 mb-1">
-                      <span className="text-lg">⚠️</span> Keep this page open
+                  <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl text-indigo-800 text-[11px] font-bold w-full mb-8">
+                    <p className="flex items-center justify-center gap-2 mb-1 uppercase tracking-wider">
+                      <span>⚡</span> Background tracking active
                     </p>
-                    <p>for GPS to work</p>
+                    <p className="opacity-70 font-medium">You can minimize the app but don't close it</p>
                   </div>
 
                   <button

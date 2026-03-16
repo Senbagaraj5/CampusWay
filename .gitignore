@@ -24,7 +24,7 @@ dist-ssr
 *.sw?
 
 # CampusWay specific
-campusway-server/
-server/
+node_modules/
 .env
-*.env
+*.log
+dist/

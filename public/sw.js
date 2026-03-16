@@ -1,7 +1,5 @@
 const CACHE_NAME = 'campusway-v1';
 const ASSETS = [
-  '/',
-  '/index.html',
   '/vite.svg',
   '/college_logo.png'
 ];
@@ -15,6 +13,11 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // Skip caching for API calls to prevent "Failed to fetch" on dynamic data
+  if (event.request.url.includes('/api/')) {
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((response) => {
       return response || fetch(event.request);
